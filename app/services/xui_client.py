@@ -31,6 +31,7 @@ class XUIClient:
                 base_url=self.base_url,
                 timeout=30.0,
                 verify=False,  # Часто self-signed certs
+                follow_redirects=True,
             )
         return self._client
 
@@ -43,7 +44,7 @@ class XUIClient:
         client = await self._get_client()
         try:
             response = await client.post(
-                f"{self.web_base_path}/login/",
+                f"{self.web_base_path}/login",
                 data={
                     "username": self.server.panel_username,
                     "password": self.server.panel_password,
@@ -58,6 +59,11 @@ class XUIClient:
             raise XUIConnectionError(self.server.ip_address, str(e)) from e
         except httpx.HTTPStatusError as e:
             raise XUIConnectionError(self.server.ip_address, str(e)) from e
+
+    async def _ensure_logged_in(self):
+        client = await self._get_client()
+        if not client.cookies:
+            await self.login()
 
     async def _request(
         self,
@@ -75,7 +81,6 @@ class XUIClient:
             kwargs = {}
             if json_data is not None:
                 kwargs["json"] = json_data
-                kwargs["headers"] = {"Content-Type": "application/json"}
             elif form_data is not None:
                 kwargs["data"] = form_data
             elif data is not None:
@@ -99,25 +104,27 @@ class XUIClient:
         except httpx.ConnectError as e:
             raise XUIConnectionError(self.server.ip_address, str(e)) from e
         except httpx.HTTPStatusError as e:
-            raise XUIApiError(f"HTTP {e.response.status_code}: {e.response.text}") from e
+            raise XUIApiError(
+                f"HTTP {e.response.status_code}: {e.response.text}"
+            ) from e
 
     # ────────── Server API ──────────
 
     async def get_server_status(self) -> Dict[str, Any]:
         """Получить статус сервера."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("GET", "/panel/api/server/status")
-        return result.get("obj", {})
+        return result.get("obj", {}) or {}
 
     async def get_new_uuid(self) -> str:
         """Получить новый UUID от панели."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("GET", "/panel/api/server/getNewUUID")
         return result["obj"]["uuid"]
 
     async def get_new_x25519_cert(self) -> Dict[str, str]:
         """Получить новый X25519 сертификат."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("GET", "/panel/api/server/getNewX25519Cert")
         return result["obj"]
 
@@ -125,22 +132,22 @@ class XUIClient:
 
     async def list_inbounds(self) -> List[Dict[str, Any]]:
         """Получить все инбаунды."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("GET", "/panel/api/inbounds/list")
-        return result.get("obj", [])
+        return result.get("obj", []) or []
 
     async def get_inbound(self, inbound_id: int) -> Dict[str, Any]:
         """Получить инбаунд по ID."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("GET", f"/panel/api/inbounds/get/{inbound_id}")
-        return result.get("obj", {})
+        return result.get("obj", {}) or {}
 
     async def add_inbound(self, inbound_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Создать новый инбаунд.
         inbound_config должен содержать: port, protocol, settings, streamSettings, sniffing и т.д.
         """
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request(
             "POST", "/panel/api/inbounds/add", json_data=inbound_config
         )
@@ -150,7 +157,7 @@ class XUIClient:
         self, inbound_id: int, inbound_config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Обновить инбаунд."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request(
             "POST",
             f"/panel/api/inbounds/update/{inbound_id}",
@@ -160,7 +167,7 @@ class XUIClient:
 
     async def delete_inbound(self, inbound_id: int) -> bool:
         """Удалить инбаунд."""
-        await self.login()
+        await self._ensure_logged_in()
         await self._request("POST", f"/panel/api/inbounds/del/{inbound_id}")
         return True
 
@@ -175,12 +182,12 @@ class XUIClient:
         Добавить клиента в инбаунд.
         client_config: {"id": "uuid", "email": "...", "flow": "...", ...}
         """
-        await self.login()
+        await self._ensure_logged_in()
         payload = {
             "id": inbound_id,
             "settings": json.dumps({"clients": [client_config]}),
         }
-        await self._request("POST", "/panel/api/inbounds/addClient", form_data=payload)
+        await self._request("POST", "/panel/api/inbounds/addClient", json_data=payload)
         return True
 
     async def update_client(
@@ -190,7 +197,7 @@ class XUIClient:
         client_config: Dict[str, Any],
     ) -> bool:
         """Обновить клиента по UUID."""
-        await self.login()
+        await self._ensure_logged_in()
         payload = {
             "id": inbound_id,
             "settings": json.dumps({"clients": [client_config]}),
@@ -204,7 +211,7 @@ class XUIClient:
 
     async def delete_client(self, inbound_id: int, client_uuid: str) -> bool:
         """Удалить клиента из инбаунда."""
-        await self.login()
+        await self._ensure_logged_in()
         await self._request(
             "POST",
             f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}",
@@ -213,7 +220,7 @@ class XUIClient:
 
     async def get_client_traffics(self, email: str) -> Optional[Dict[str, Any]]:
         """Получить трафик клиента по email."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request(
             "GET",
             f"/panel/api/inbounds/getClientTraffics/{email}",
@@ -222,9 +229,9 @@ class XUIClient:
 
     async def get_online_clients(self) -> List[str]:
         """Получить список онлайн-клиентов."""
-        await self.login()
+        await self._ensure_logged_in()
         result = await self._request("POST", "/panel/api/inbounds/onlines")
-        return result.get("obj", [])
+        return result.get("obj", []) or []
 
     # ────────── Helper methods ──────────
 
