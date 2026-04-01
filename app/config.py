@@ -2,9 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = (
-        "postgresql+asyncpg://vpn_user:vpn_password@localhost:5432/vpn_db"
-    )
+    DATABASE_URL: str
 
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
