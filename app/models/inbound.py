@@ -1,4 +1,13 @@
-from sqlalchemy import String, Integer, DateTime, JSON, Boolean, ForeignKey, func
+from sqlalchemy import (
+    String,
+    Integer,
+    BigInteger,
+    DateTime,
+    JSON,
+    Boolean,
+    ForeignKey,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Any
 from datetime import datetime
@@ -31,9 +40,9 @@ class Inbound(Base):
     enable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Traffic
-    up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    down: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    up: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    down: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()  # pylint: disable=E1102

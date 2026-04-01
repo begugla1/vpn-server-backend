@@ -64,7 +64,7 @@ class SubscriptionService:
                 expiry_time=data.expiry_time,
                 limit_ip=data.limit_ip,
                 enable=data.enable,
-                tg_id=data.tg_id or "",
+                tg_id=user.telegram_id or "",
                 flow=data.flow,
             )
 
