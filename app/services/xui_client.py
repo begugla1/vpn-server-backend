@@ -20,7 +20,11 @@ class XUIClient:
     def __init__(self, server: Server):
         self.server = server
         self._session_cookie: Optional[str] = None
-        protocol = "https" if server.use_https else "http"
+        if not server.use_https:
+            raise XUIConnectionError(
+                server.ip_address, detail="Unsafe connection via HTTP forbidden"
+            )
+        protocol = "https"
         self.base_url = f"{protocol}://{server.ip_address}:{server.panel_port}"
         self.web_base_path = server.web_base_path.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
