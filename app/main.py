@@ -5,7 +5,7 @@ from app.routers import users, servers, inbounds, subscriptions
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     # Здесь больше не создаём таблицы автоматически.
     # Схема БД управляется через Alembic миграции.
     yield
