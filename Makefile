@@ -25,14 +25,8 @@ WARP_SCRIPT := ./ops/vpn-node/setup_warp.sh
 OPS_STATE_DIR := /var/tmp/ops-run-safe
 OPS_LOG_DIR := /var/log
 
-BACKEND_ENV_VARS := APP_PORT,SSH_PORT
-VPN_ENV_VARS := BACKEND_IP,SSH_PORT,X3UI_PORT,X3UI_SUB_PORT,X3UI_WEB_BASE_PATH,X3UI_SUB_PATH,X3UI_USERNAME,X3UI_PASSWORD,ENABLE_BBR,ENABLE_FIREWALL,ENABLE_WARP_ROUTING,WARP_PROXY_PORT
-WARP_ENV_VARS := WARP_PROXY_PORT
-
-export APP_PORT SSH_PORT BACKEND_IP X3UI_PORT X3UI_SUB_PORT X3UI_WEB_BASE_PATH X3UI_SUB_PATH X3UI_USERNAME X3UI_PASSWORD ENABLE_BBR ENABLE_FIREWALL ENABLE_WARP_ROUTING WARP_PROXY_PORT JOB
-
-define AS_ROOT_KEEP_ENV
-$(if $(strip $(SUDO)),$(SUDO) --preserve-env=$(1),) $(2)
+define AS_ROOT
+$(if $(strip $(SUDO)),$(SUDO),) $(1)
 endef
 
 .PHONY: help up logs migrate backend-deploy backend-deploy-direct vpn-install vpn-install-direct vpn-update vpn-update-direct vpn-backup vpn-version warp-setup warp-setup-direct safe-info safe-logs safe-status require-backend-ip require-job
@@ -65,10 +59,10 @@ migrate:
 	docker compose run --rm backend alembic upgrade head
 
 backend-deploy:
-	$(call AS_ROOT_KEEP_ENV,$(BACKEND_ENV_VARS),$(RUN_SAFE) --name backend-deploy -- bash $(BACKEND_SCRIPT))
+	$(call AS_ROOT,$(RUN_SAFE) --name backend-deploy -- "APP_PORT=$(APP_PORT)" "SSH_PORT=$(SSH_PORT)" bash $(BACKEND_SCRIPT))
 
 backend-deploy-direct:
-	$(call AS_ROOT_KEEP_ENV,$(BACKEND_ENV_VARS),bash $(BACKEND_SCRIPT))
+	$(call AS_ROOT,env APP_PORT="$(APP_PORT)" SSH_PORT="$(SSH_PORT)" bash $(BACKEND_SCRIPT))
 
 require-backend-ip:
 	@if [[ -z "$(BACKEND_IP)" ]]; then \
@@ -77,28 +71,28 @@ require-backend-ip:
 	fi
 
 vpn-install: require-backend-ip
-	$(call AS_ROOT_KEEP_ENV,$(VPN_ENV_VARS),$(RUN_SAFE) --name vpn-install -- bash $(VPN_SCRIPT) install)
+	$(call AS_ROOT,$(RUN_SAFE) --name vpn-install -- "BACKEND_IP=$(BACKEND_IP)" "SSH_PORT=$(SSH_PORT)" "X3UI_PORT=$(X3UI_PORT)" "X3UI_SUB_PORT=$(X3UI_SUB_PORT)" "X3UI_WEB_BASE_PATH=$(X3UI_WEB_BASE_PATH)" "X3UI_SUB_PATH=$(X3UI_SUB_PATH)" "X3UI_USERNAME=$(X3UI_USERNAME)" "X3UI_PASSWORD=$(X3UI_PASSWORD)" "ENABLE_BBR=$(ENABLE_BBR)" "ENABLE_FIREWALL=$(ENABLE_FIREWALL)" "ENABLE_WARP_ROUTING=$(ENABLE_WARP_ROUTING)" "WARP_PROXY_PORT=$(WARP_PROXY_PORT)" bash $(VPN_SCRIPT) install)
 
 vpn-install-direct: require-backend-ip
-	$(call AS_ROOT_KEEP_ENV,$(VPN_ENV_VARS),bash $(VPN_SCRIPT) install)
+	$(call AS_ROOT,env BACKEND_IP="$(BACKEND_IP)" SSH_PORT="$(SSH_PORT)" X3UI_PORT="$(X3UI_PORT)" X3UI_SUB_PORT="$(X3UI_SUB_PORT)" X3UI_WEB_BASE_PATH="$(X3UI_WEB_BASE_PATH)" X3UI_SUB_PATH="$(X3UI_SUB_PATH)" X3UI_USERNAME="$(X3UI_USERNAME)" X3UI_PASSWORD="$(X3UI_PASSWORD)" ENABLE_BBR="$(ENABLE_BBR)" ENABLE_FIREWALL="$(ENABLE_FIREWALL)" ENABLE_WARP_ROUTING="$(ENABLE_WARP_ROUTING)" WARP_PROXY_PORT="$(WARP_PROXY_PORT)" bash $(VPN_SCRIPT) install)
 
 vpn-update: require-backend-ip
-	$(call AS_ROOT_KEEP_ENV,$(VPN_ENV_VARS),$(RUN_SAFE) --name vpn-update -- bash $(VPN_SCRIPT) update)
+	$(call AS_ROOT,$(RUN_SAFE) --name vpn-update -- "BACKEND_IP=$(BACKEND_IP)" "SSH_PORT=$(SSH_PORT)" "X3UI_PORT=$(X3UI_PORT)" "X3UI_SUB_PORT=$(X3UI_SUB_PORT)" "X3UI_WEB_BASE_PATH=$(X3UI_WEB_BASE_PATH)" "X3UI_SUB_PATH=$(X3UI_SUB_PATH)" "X3UI_USERNAME=$(X3UI_USERNAME)" "X3UI_PASSWORD=$(X3UI_PASSWORD)" "ENABLE_BBR=$(ENABLE_BBR)" "ENABLE_FIREWALL=$(ENABLE_FIREWALL)" "ENABLE_WARP_ROUTING=$(ENABLE_WARP_ROUTING)" "WARP_PROXY_PORT=$(WARP_PROXY_PORT)" bash $(VPN_SCRIPT) update)
 
 vpn-update-direct: require-backend-ip
-	$(call AS_ROOT_KEEP_ENV,$(VPN_ENV_VARS),bash $(VPN_SCRIPT) update)
+	$(call AS_ROOT,env BACKEND_IP="$(BACKEND_IP)" SSH_PORT="$(SSH_PORT)" X3UI_PORT="$(X3UI_PORT)" X3UI_SUB_PORT="$(X3UI_SUB_PORT)" X3UI_WEB_BASE_PATH="$(X3UI_WEB_BASE_PATH)" X3UI_SUB_PATH="$(X3UI_SUB_PATH)" X3UI_USERNAME="$(X3UI_USERNAME)" X3UI_PASSWORD="$(X3UI_PASSWORD)" ENABLE_BBR="$(ENABLE_BBR)" ENABLE_FIREWALL="$(ENABLE_FIREWALL)" ENABLE_WARP_ROUTING="$(ENABLE_WARP_ROUTING)" WARP_PROXY_PORT="$(WARP_PROXY_PORT)" bash $(VPN_SCRIPT) update)
 
 vpn-backup:
-	$(call AS_ROOT_KEEP_ENV,$(VPN_ENV_VARS),bash $(VPN_SCRIPT) backup)
+	$(call AS_ROOT,env BACKEND_IP="$(BACKEND_IP)" SSH_PORT="$(SSH_PORT)" X3UI_PORT="$(X3UI_PORT)" X3UI_SUB_PORT="$(X3UI_SUB_PORT)" X3UI_WEB_BASE_PATH="$(X3UI_WEB_BASE_PATH)" X3UI_SUB_PATH="$(X3UI_SUB_PATH)" X3UI_USERNAME="$(X3UI_USERNAME)" X3UI_PASSWORD="$(X3UI_PASSWORD)" ENABLE_BBR="$(ENABLE_BBR)" ENABLE_FIREWALL="$(ENABLE_FIREWALL)" ENABLE_WARP_ROUTING="$(ENABLE_WARP_ROUTING)" WARP_PROXY_PORT="$(WARP_PROXY_PORT)" bash $(VPN_SCRIPT) backup)
 
 vpn-version:
 	bash $(VPN_SCRIPT) version
 
 warp-setup:
-	$(call AS_ROOT_KEEP_ENV,$(WARP_ENV_VARS),$(RUN_SAFE) --name setup-warp -- bash $(WARP_SCRIPT))
+	$(call AS_ROOT,$(RUN_SAFE) --name setup-warp -- "WARP_PROXY_PORT=$(WARP_PROXY_PORT)" bash $(WARP_SCRIPT))
 
 warp-setup-direct:
-	$(call AS_ROOT_KEEP_ENV,$(WARP_ENV_VARS),bash $(WARP_SCRIPT))
+	$(call AS_ROOT,env WARP_PROXY_PORT="$(WARP_PROXY_PORT)" bash $(WARP_SCRIPT))
 
 require-job:
 	@if [[ -z "$(JOB)" ]]; then \
