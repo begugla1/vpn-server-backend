@@ -2,9 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="vpn-server.sh"
-SCRIPT_VERSION="1.2.0"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WARP_SETUP_SCRIPT="${SCRIPT_DIR}/setup_warp.sh"
+SCRIPT_VERSION="1.3.0"
 
 # =============================================================================
 # VPN server bootstrap / update / backup
@@ -29,11 +27,10 @@ X3UI_SUB_PATH="${X3UI_SUB_PATH:-}"
 X3UI_USERNAME="${X3UI_USERNAME:-admin}"
 X3UI_PASSWORD="${X3UI_PASSWORD:-}"      # generated only during fresh install if empty
 BACKEND_IP="${BACKEND_IP:-}"
+ADMIN_IP="${ADMIN_IP:-}"
 SSH_PORT="${SSH_PORT:-22}"
 ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
-ENABLE_WARP_ROUTING="${ENABLE_WARP_ROUTING:-true}"
-WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
 
@@ -101,11 +98,10 @@ Environment overrides:
   X3UI_PASSWORD=...
   X3UI_SUB_PATH=/sub-xxxx
   BACKEND_IP=1.2.3.4
+  ADMIN_IP=1.2.3.5
   SSH_PORT=22
   ENABLE_BBR=true
   ENABLE_FIREWALL=true
-  ENABLE_WARP_ROUTING=true
-  WARP_PROXY_PORT=40000
 EOF
 }
 
@@ -132,7 +128,6 @@ validate_config() {
   validate_port "$X3UI_PORT"
   validate_port "$X3UI_SUB_PORT"
   validate_port "$SSH_PORT"
-  validate_port "$WARP_PROXY_PORT"
   [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
   [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
 
@@ -144,11 +139,6 @@ validate_config() {
   case "$ENABLE_FIREWALL" in
     true|false) ;;
     *) die "ENABLE_FIREWALL must be true or false" ;;
-  esac
-
-  case "$ENABLE_WARP_ROUTING" in
-    true|false) ;;
-    *) die "ENABLE_WARP_ROUTING must be true or false" ;;
   esac
 
   if [[ "$ENABLE_FIREWALL" == "true" && -z "$BACKEND_IP" ]]; then
@@ -441,6 +431,7 @@ Password: ${X3UI_PASSWORD}
 Subscription Path: ${X3UI_SUB_PATH}
 Subscription Port: ${X3UI_SUB_PORT}
 Backend IP allowed for panel/subscription: ${BACKEND_IP}
+Admin IP allowed for panel: ${ADMIN_IP:-not set}
 Generated: $(date)
 EOF
   chmod 600 "$CREDS_FILE"
@@ -523,6 +514,9 @@ setup_firewall() {
 
   ufw limit "${SSH_PORT}/tcp" comment 'SSH'
   ufw allow from "${BACKEND_IP}" to any port "${X3UI_PORT}" proto tcp comment '3X-UI Panel from backend'
+  if [[ -n "${ADMIN_IP}" && "${ADMIN_IP}" != "${BACKEND_IP}" ]]; then
+    ufw allow from "${ADMIN_IP}" to any port "${X3UI_PORT}" proto tcp comment '3X-UI Panel from admin'
+  fi
   ufw allow from "${BACKEND_IP}" to any port "${X3UI_SUB_PORT}" proto tcp comment '3X-UI Subscription from backend'
   ufw allow 443/tcp comment 'HTTPS/VLESS/Trojan'
 
@@ -634,34 +628,6 @@ EOF
   log_success "Created: /usr/local/bin/vpn-status"
 }
 
-install_warp_helper_script() {
-  section "Install WARP helper"
-
-  [[ -f "$WARP_SETUP_SCRIPT" ]] || die "WARP helper script not found: $WARP_SETUP_SCRIPT"
-  install -m 0755 "$WARP_SETUP_SCRIPT" /usr/local/bin/setup-warp
-  log_success "Installed: /usr/local/bin/setup-warp"
-}
-
-setup_warp_routing() {
-  section "Cloudflare WARP routing"
-
-  if [[ "$ENABLE_WARP_ROUTING" != "true" ]]; then
-    log_warn "WARP routing disabled by config"
-    return 0
-  fi
-
-  install_warp_helper_script
-
-  BACKUP_DIR="$BACKUP_DIR" \
-  XUI_DB="$XUI_DB" \
-  WARP_PROXY_PORT="$WARP_PROXY_PORT" \
-  SQLITE_BUSY_TIMEOUT_MS="$SQLITE_BUSY_TIMEOUT_MS" \
-  SQLITE_RETRY_ATTEMPTS="$SQLITE_RETRY_ATTEMPTS" \
-  bash /usr/local/bin/setup-warp
-
-  log_success "Cloudflare WARP routing configured"
-}
-
 # ----------------------------
 # Auto security updates
 # ----------------------------
@@ -764,12 +730,10 @@ show_install_summary() {
   echo "Password:  ${X3UI_PASSWORD}"
   echo
   echo "Backend IP for panel/subscription: ${BACKEND_IP}"
-  echo "Panel port:                      ${X3UI_PORT}/tcp (backend IP only)"
+  echo "Admin IP for panel:                ${ADMIN_IP:-not set}"
+  echo "Panel port:                        ${X3UI_PORT}/tcp (backend + admin IP)"
   echo "Subscription port:               ${X3UI_SUB_PORT}/tcp (backend IP only)"
   echo "VPN public ports:                443/tcp"
-  if [[ "$ENABLE_WARP_ROUTING" == "true" ]]; then
-    echo "WARP local SOCKS5 proxy:         127.0.0.1:${WARP_PROXY_PORT}"
-  fi
   echo
   echo "Credentials file: ${CREDS_FILE}"
   echo "Backup dir:        ${BACKUP_DIR}"
@@ -783,9 +747,8 @@ show_update_summary() {
   echo "3X-UI DB preserved: yes"
   echo "3X-UI credentials preserved: yes"
   echo "3X-UI reinstall performed: no"
-  if [[ "$ENABLE_WARP_ROUTING" == "true" ]]; then
-    echo "WARP routing refreshed: yes (127.0.0.1:${WARP_PROXY_PORT})"
-  fi
+  echo "Panel access allowed from backend IP: ${BACKEND_IP}"
+  echo "Panel access allowed from admin IP:   ${ADMIN_IP:-not set}"
   echo
   echo "Latest backups:"
   ls -1t "${BACKUP_DIR}"/x-ui-db-*.db 2>/dev/null | head -3 || true
@@ -806,7 +769,6 @@ cmd_install() {
   fresh_install_3xui
   configure_3xui_first_install_only
   setup_xui_systemd
-  setup_warp_routing
   setup_firewall
   setup_fail2ban
   setup_logrotate
@@ -831,7 +793,6 @@ cmd_update() {
   # no changing x-ui username/password/port/path
 
   setup_xui_systemd
-  setup_warp_routing
   setup_firewall
   setup_fail2ban
   setup_logrotate
