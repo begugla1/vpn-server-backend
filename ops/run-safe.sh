@@ -151,8 +151,8 @@ create_runner_script() {
         printf 'cd %q\n' "${cwd}"
         printf 'umask 077\n'
         printf 'exec >>%q 2>&1\n' "${log_path}"
-        printf 'printf '"'"'[%s] Detached command started\n'"'"' "$(date '"'"'+%%F %%T'"'"')"\n'
-        printf 'printf '"'"'[%s] Command: %s\n'"'"' "$(date '"'"'+%%F %%T'"'"')" %q\n' "${command_string}"
+        printf 'printf '"'"'[%%s] Detached command started\n'"'"' "$(date '"'"'+%%F %%T'"'"')"\n'
+        printf 'printf '"'"'[%%s] Command: %%s\n'"'"' "$(date '"'"'+%%F %%T'"'"')" %q\n' "${command_string}"
 
         for assignment in "${ENV_ASSIGNMENTS[@]}"; do
             printf 'export %q\n' "${assignment}"
@@ -165,7 +165,7 @@ create_runner_script() {
         printf '\n'
         printf 'exit_code=$?\n'
         printf 'set -e\n'
-        printf 'printf '"'"'[%s] Detached command finished with exit code %s\n'"'"' "$(date '"'"'+%%F %%T'"'"')" "$exit_code"\n'
+        printf 'printf '"'"'[%%s] Detached command finished with exit code %%s\n'"'"' "$(date '"'"'+%%F %%T'"'"')" "$exit_code"\n'
         printf 'exit "$exit_code"\n'
     } > "${runner_path}"
 
