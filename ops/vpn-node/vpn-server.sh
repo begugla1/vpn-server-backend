@@ -34,6 +34,8 @@ ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
 ENABLE_WARP_ROUTING="${ENABLE_WARP_ROUTING:-true}"
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
+SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
 
 XUI_DB="/etc/x-ui/x-ui.db"
 XUI_ETC_DIR="/etc/x-ui"
@@ -131,6 +133,8 @@ validate_config() {
   validate_port "$X3UI_SUB_PORT"
   validate_port "$SSH_PORT"
   validate_port "$WARP_PROXY_PORT"
+  [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
+  [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
 
   case "$ENABLE_BBR" in
     true|false) ;;
@@ -152,6 +156,33 @@ validate_config() {
   fi
 }
 
+run_sqlite_with_retry() {
+  local db_path="$1"
+  local sql="$2"
+  local attempt output
+
+  for ((attempt = 1; attempt <= SQLITE_RETRY_ATTEMPTS; attempt++)); do
+    output="$(
+      sqlite3 "$db_path" <<EOF 2>&1
+.timeout ${SQLITE_BUSY_TIMEOUT_MS}
+${sql}
+EOF
+    )" && {
+      printf '%s' "$output"
+      return 0
+    }
+
+    if grep -qiE 'database is locked|database is busy' <<< "$output" && (( attempt < SQLITE_RETRY_ATTEMPTS )); then
+      log_warn "SQLite DB is locked, retrying (${attempt}/${SQLITE_RETRY_ATTEMPTS})..."
+      sleep 2
+      continue
+    fi
+
+    log_error "$output"
+    return 1
+  done
+}
+
 # ----------------------------
 # Backup
 # ----------------------------
@@ -171,7 +202,7 @@ backup_xui_db() {
 
   # SQLite-safe backup if sqlite3 exists, else plain cp
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$XUI_DB" ".backup '${out}'"
+    run_sqlite_with_retry "$XUI_DB" ".backup '${out}'" >/dev/null
   else
     cp "$XUI_DB" "$out"
   fi
@@ -673,6 +704,8 @@ setup_periodic_db_backup_job() {
 set -Eeuo pipefail
 BACKUP_DIR="${BACKUP_DIR}"
 DB="${XUI_DB}"
+SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS}"
+SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS}"
 mkdir -p "\$BACKUP_DIR"
 if [[ ! -f "\$DB" ]]; then
   exit 0
@@ -680,7 +713,23 @@ fi
 TS=\$(date +%Y%m%d_%H%M%S)
 OUT="\$BACKUP_DIR/x-ui-db-\$TS.db"
 if command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 "\$DB" ".backup '\$OUT'"
+  attempt=1
+  while true; do
+    if sqlite3 "\$DB" <<SQLITE_EOF >/dev/null 2>&1
+.timeout \$SQLITE_BUSY_TIMEOUT_MS
+.backup '\$OUT'
+SQLITE_EOF
+    then
+      break
+    fi
+
+    if (( attempt >= SQLITE_RETRY_ATTEMPTS )); then
+      exit 1
+    fi
+
+    sleep 2
+    attempt=\$((attempt + 1))
+  done
 else
   cp "\$DB" "\$OUT"
 fi

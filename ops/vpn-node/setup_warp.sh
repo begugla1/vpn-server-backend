@@ -5,6 +5,8 @@ set -Eeuo pipefail
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 DB_PATH="${XUI_DB:-/etc/x-ui/x-ui.db}"
 BACKUP_DIR="${BACKUP_DIR:-/root/x-ui-backups}"
+SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
+SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
 KEYRING_PATH="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
 REPO_PATH="/etc/apt/sources.list.d/cloudflare-client.list"
 WARP_DOMAINS_JSON='[
@@ -34,10 +36,39 @@ require_root() {
 validate_port() {
   [[ "${WARP_PROXY_PORT}" =~ ^[0-9]+$ ]] || die "WARP_PROXY_PORT must be numeric."
   (( WARP_PROXY_PORT >= 1 && WARP_PROXY_PORT <= 65535 )) || die "WARP_PROXY_PORT out of range."
+  [[ "${SQLITE_BUSY_TIMEOUT_MS}" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric."
+  [[ "${SQLITE_RETRY_ATTEMPTS}" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric."
 }
 
 require_xui_db() {
   [[ -f "${DB_PATH}" ]] || die "3X-UI database not found: ${DB_PATH}"
+}
+
+run_sqlite_with_retry() {
+  local sql="$1"
+  local attempt
+  local output
+
+  for ((attempt = 1; attempt <= SQLITE_RETRY_ATTEMPTS; attempt++)); do
+    output="$(
+      sqlite3 "${DB_PATH}" <<EOF 2>&1
+.timeout ${SQLITE_BUSY_TIMEOUT_MS}
+${sql}
+EOF
+    )" && {
+      printf '%s' "${output}"
+      return 0
+    }
+
+    if grep -qiE 'database is locked|database is busy' <<< "${output}" && (( attempt < SQLITE_RETRY_ATTEMPTS )); then
+      log "SQLite DB is locked, retrying (${attempt}/${SQLITE_RETRY_ATTEMPTS})"
+      sleep 2
+      continue
+    fi
+
+    log "ERROR: ${output}"
+    return 1
+  done
 }
 
 install_prerequisites() {
@@ -118,7 +149,7 @@ backup_xui_db() {
   backup_file="${BACKUP_DIR}/x-ui-db-warp-${timestamp}.db"
 
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "${DB_PATH}" ".backup '${backup_file}'"
+    run_sqlite_with_retry ".backup '${backup_file}'" >/dev/null
   else
     cp "${DB_PATH}" "${backup_file}"
   fi
@@ -133,7 +164,7 @@ update_xray_template() {
   local safe_new_config
   local changes_output
 
-  current_config="$(sqlite3 "${DB_PATH}" "SELECT value FROM settings WHERE key='xrayTemplateConfig' LIMIT 1;")"
+  current_config="$(run_sqlite_with_retry "SELECT value FROM settings WHERE key='xrayTemplateConfig' LIMIT 1;")"
   [[ -n "${current_config}" ]] || die "xrayTemplateConfig was not found in ${DB_PATH}"
 
   new_config="$(printf '%s' "${current_config}" | jq \
@@ -161,13 +192,13 @@ update_xray_template() {
     ')" || die "Failed to patch xrayTemplateConfig JSON."
 
   safe_new_config="$(printf '%s' "${new_config}" | sed "s/'/''/g")"
-  changes_output="$(sqlite3 "${DB_PATH}" <<EOF
+  changes_output="$(run_sqlite_with_retry "$(cat <<EOF
 UPDATE settings
 SET value='${safe_new_config}'
 WHERE key='xrayTemplateConfig';
 SELECT changes();
 EOF
-)"
+)")"
 
   if [[ "$(printf '%s' "${changes_output}" | tail -n1)" != "1" ]]; then
     die "Failed to update xrayTemplateConfig in ${DB_PATH}"
