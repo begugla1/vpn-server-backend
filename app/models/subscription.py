@@ -1,7 +1,16 @@
 from typing import Any
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, JSON, Boolean, BigInteger, DateTime, func
+from sqlalchemy import (
+    ForeignKey,
+    String,
+    JSON,
+    Boolean,
+    BigInteger,
+    DateTime,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -9,6 +18,9 @@ from app.database import Base
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_subscriptions_user_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(

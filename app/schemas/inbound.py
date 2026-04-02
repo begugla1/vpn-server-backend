@@ -25,6 +25,8 @@ class InboundUpdate(BaseModel):
     settings: Optional[Dict[str, Any]] = None
     stream_settings: Optional[Dict[str, Any]] = None
     sniffing: Optional[Dict[str, Any]] = None
+    total: Optional[int] = None
+    expiry_time: Optional[int] = None
 
 
 class InboundResponse(BaseModel):
@@ -41,6 +43,7 @@ class InboundResponse(BaseModel):
     up: int
     down: int
     total: int
+    expiry_time: int
     created_at: datetime
     updated_at: datetime
 

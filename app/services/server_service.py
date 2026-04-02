@@ -65,7 +65,7 @@ class ServerService:
                 xray_version=status_data.get("xray", {}).get("version"),
                 uptime=status_data.get("uptime"),
             )
-        except BaseException:  # pylint: disable=broad-except
+        except Exception:  # pylint: disable=broad-except
             return ServerStatus(
                 server_id=server.id,
                 server_name=server.name,

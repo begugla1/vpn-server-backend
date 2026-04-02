@@ -5,6 +5,8 @@ from typing import List, Optional
 from app.database import get_session
 from app.schemas.subscription import (
     SubscriptionCreate,
+    SubscriptionCreateWithAnyAvailableServer,
+    SubscriptionCreateWithAnyAvailableServerResponse,
     SubscriptionUpdate,
     SubscriptionResponse,
 )
@@ -26,6 +28,26 @@ async def create_subscription(
     """
     service = SubscriptionService(session)
     return await service.create_subscription(data)
+
+
+@router.post(
+    "/auto",
+    response_model=SubscriptionCreateWithAnyAvailableServerResponse,
+    status_code=201,
+)
+async def create_subscription_with_any_available_server(
+    data: SubscriptionCreateWithAnyAvailableServer,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Создать подписку на любом активном сервере с доступным inbound.
+
+    Если свободных по лимиту серверов нет, используется soft-limit:
+    выбирается наименее загруженный активный сервер и в ответе
+    возвращается warning.
+    """
+    service = SubscriptionService(session)
+    return await service.create_subscription_with_any_available_server(data)
 
 
 @router.get("/", response_model=List[SubscriptionResponse])

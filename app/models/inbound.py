@@ -6,6 +6,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     ForeignKey,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -17,6 +18,13 @@ from app.database import Base
 
 class Inbound(Base):
     __tablename__ = "inbounds"
+    __table_args__ = (
+        UniqueConstraint(
+            "server_id",
+            "xui_inbound_id",
+            name="uq_inbounds_server_id_xui_inbound_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     server_id: Mapped[int] = mapped_column(
@@ -43,6 +51,7 @@ class Inbound(Base):
     up: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     down: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    expiry_time: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()  # pylint: disable=E1102

@@ -1,20 +1,26 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 from datetime import datetime
+
+from app.config import settings
 
 
 class ServerCreate(BaseModel):
     name: str
     ip_address: str
-    panel_port: int = 2053
-    panel_username: str = "admin"
-    panel_password: str = "admin"
-    web_base_path: str = "/"
-    use_https: bool = False
+    panel_port: int = settings.DEFAULT_XUI_PORT
+    panel_username: str = settings.DEFAULT_XUI_USERNAME
+    panel_password: str = settings.DEFAULT_XUI_PASSWORD
+    web_base_path: str = settings.DEFAULT_XUI_WEB_BASE_PATH
+    use_https: bool = True
     subscription_port: int = 2096
     subscription_base_path: str = "/sub/"
     open_ports: Optional[Dict[str, Any]] = None
     configuration: Optional[Dict[str, Any]] = None
+    max_subscriptions: int = Field(
+        default=settings.DEFAULT_SERVER_MAX_SUBSCRIPTIONS,
+        ge=1,
+    )
 
 
 class ServerUpdate(BaseModel):
@@ -29,6 +35,7 @@ class ServerUpdate(BaseModel):
     subscription_base_path: Optional[str] = None
     open_ports: Optional[Dict[str, Any]] = None
     configuration: Optional[Dict[str, Any]] = None
+    max_subscriptions: Optional[int] = Field(default=None, ge=1)
     is_active: Optional[bool] = None
 
 
@@ -44,6 +51,7 @@ class ServerResponse(BaseModel):
     subscription_base_path: str
     open_ports: Optional[Dict[str, Any]]
     configuration: Optional[Dict[str, Any]]
+    max_subscriptions: int
     is_active: bool
     created_at: datetime
     updated_at: datetime

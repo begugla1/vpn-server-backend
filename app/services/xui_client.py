@@ -264,30 +264,11 @@ class XUIClient:
         self,
         port: int,
         remark: str = "",
-        client_email: Optional[str] = None,
         security: str = "none",
     ) -> Dict[str, Any]:
         """Создать конфигурацию VLESS инбаунда по умолчанию."""
-        client_id = str(uuid.uuid4())
-        email = client_email or self.generate_email()
-        sub_id = self.generate_sub_id()
-
         settings = {
-            "clients": [
-                {
-                    "id": client_id,
-                    "flow": "",
-                    "email": email,
-                    "limitIp": 0,
-                    "totalGB": 0,
-                    "expiryTime": 0,
-                    "enable": True,
-                    "tgId": "",
-                    "subId": sub_id,
-                    "comment": "",
-                    "reset": 0,
-                }
-            ],
+            "clients": [],
             "decryption": "none",
             "fallbacks": [],
         }

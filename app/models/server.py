@@ -5,6 +5,7 @@ from sqlalchemy import String, Integer, DateTime, JSON, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.config import settings
 
 
 class Server(Base):
@@ -15,7 +16,7 @@ class Server(Base):
     ip_address: Mapped[str] = mapped_column(String(45), nullable=False, unique=True)
 
     # 3X-UI panel connection settings
-    panel_port: Mapped[int] = mapped_column(Integer, nullable=False, default=2053)
+    panel_port: Mapped[int] = mapped_column(Integer, nullable=False, default=65000)
     panel_username: Mapped[str] = mapped_column(
         String(255), nullable=False, default="admin"
     )
@@ -23,7 +24,7 @@ class Server(Base):
         String(255), nullable=False, default="admin"
     )
     web_base_path: Mapped[str] = mapped_column(String(255), nullable=False, default="/")
-    use_https: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    use_https: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Subscription port on XUI panel
     subscription_port: Mapped[int] = mapped_column(
@@ -39,6 +40,11 @@ class Server(Base):
     )
     configuration: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True, default=dict
+    )
+    max_subscriptions: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=settings.DEFAULT_SERVER_MAX_SUBSCRIPTIONS,
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

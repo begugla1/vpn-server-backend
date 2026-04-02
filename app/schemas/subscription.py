@@ -3,13 +3,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 
 
-class SubscriptionCreate(BaseModel):
-    """Создание подписки: привязка клиента к inbound на сервере."""
-
-    user_id: int  # Наш внутренний user ID
-    server_id: int
-    inbound_id: int  # Наш внутренний inbound ID
-
+class SubscriptionCreateBase(BaseModel):
     # Параметры клиента на XUI
     client_email: Optional[str] = None  # если не указан — генерируется
     total_gb: int = 0  # 0 = unlimited, в байтах
@@ -18,6 +12,20 @@ class SubscriptionCreate(BaseModel):
     enable: bool = True
     tg_id: Optional[str] = ""
     flow: str = ""  # для VLESS: xtls-rprx-vision
+
+
+class SubscriptionCreate(SubscriptionCreateBase):
+    """Создание подписки: привязка клиента к inbound на сервере."""
+
+    user_id: int  # Наш внутренний user ID
+    server_id: int
+    inbound_id: int  # Наш внутренний inbound ID
+
+
+class SubscriptionCreateWithAnyAvailableServer(SubscriptionCreateBase):
+    """Создание подписки на любой доступной ноде."""
+
+    user_id: int
 
 
 class SubscriptionUpdate(BaseModel):
@@ -56,3 +64,8 @@ class SubscriptionDetail(SubscriptionResponse):
     server_ip: Optional[str] = None
     inbound_protocol: Optional[str] = None
     inbound_port: Optional[int] = None
+
+
+class SubscriptionCreateWithAnyAvailableServerResponse(BaseModel):
+    subscription: SubscriptionResponse
+    warning: Optional[str] = None

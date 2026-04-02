@@ -6,7 +6,7 @@ from app.models.server import Server
 from app.models.inbound import Inbound
 from app.schemas.inbound import InboundCreate, InboundUpdate
 from app.services.xui_client import XUIClient
-from app.exceptions import NotFoundException
+from app.exceptions import NotFoundException, AppException
 
 
 class InboundService:
@@ -33,6 +33,11 @@ class InboundService:
             if data.settings:
                 settings_str = json.dumps(data.settings)
             else:
+                if data.protocol != "vless":
+                    raise AppException(
+                        "Default inbound generation is supported only for protocol=vless. "
+                        "Provide explicit settings for other protocols."
+                    )
                 # Создаём дефолтный VLESS inbound
                 default_config = client.build_default_vless_inbound(
                     port=data.port,
@@ -95,6 +100,8 @@ class InboundService:
                 stream_settings=stream_settings,
                 sniffing=sniffing,
                 enable=data.enable,
+                total=data.total,
+                expiry_time=data.expiry_time,
             )
             self.session.add(inbound)
             await self.session.commit()
@@ -145,6 +152,10 @@ class InboundService:
                 )
             if "sniffing" in update_data and update_data["sniffing"]:
                 xui_inbound["sniffing"] = json.dumps(update_data["sniffing"])
+            if "total" in update_data:
+                xui_inbound["total"] = update_data["total"]
+            if "expiry_time" in update_data:
+                xui_inbound["expiryTime"] = update_data["expiry_time"]
 
             await client.update_inbound(inbound.xui_inbound_id, xui_inbound)
 
@@ -227,6 +238,7 @@ class InboundService:
                     existing.up = xui_ib.get("up", 0)
                     existing.down = xui_ib.get("down", 0)
                     existing.total = xui_ib.get("total", 0)
+                    existing.expiry_time = xui_ib.get("expiryTime", 0)
                     synced.append(existing)
                 else:
                     inbound = Inbound(
@@ -242,6 +254,7 @@ class InboundService:
                         up=xui_ib.get("up", 0),
                         down=xui_ib.get("down", 0),
                         total=xui_ib.get("total", 0),
+                        expiry_time=xui_ib.get("expiryTime", 0),
                     )
                     self.session.add(inbound)
                     synced.append(inbound)
