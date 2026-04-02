@@ -116,6 +116,8 @@ docker compose run --rm backend alembic upgrade head
 
 Серверные `ops`-скрипты лучше запускать через `ops/run-safe.sh`, потому что во время установки может оборваться SSH. Лог пишется в `/var/log/<name>.log`, metadata сохраняется в `/var/tmp/ops-run-safe/<name>.env`.
 
+Если SSH у сервера работает не на `22`, обязательно передавайте `SSH_PORT=...` в `deploy_production.sh` и `vpn-server.sh`, иначе можно закрыть себе доступ после применения firewall.
+
 Backend host deploy:
 
 ```bash
@@ -137,6 +139,13 @@ sudo ./ops/run-safe.sh --name vpn-update -- \
   BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
 ```
 
+Backend host deploy с кастомным SSH-портом:
+
+```bash
+sudo ./ops/run-safe.sh --name backend-deploy -- \
+  SSH_PORT=2222 APP_PORT=8000 bash ./ops/backend-host/deploy_production.sh
+```
+
 WARP routing helper:
 
 ```bash
@@ -149,6 +158,13 @@ sudo ./ops/run-safe.sh --name setup-warp -- \
 ```bash
 cat /var/tmp/ops-run-safe/vpn-install.env
 tail -f /var/log/vpn-install.log
+```
+
+Для `systemd`-запуска можно дополнительно проверить unit из поля `UNIT=...`:
+
+```bash
+. /var/tmp/ops-run-safe/vpn-install.env
+systemctl status "$UNIT"
 ```
 
 ## Документация

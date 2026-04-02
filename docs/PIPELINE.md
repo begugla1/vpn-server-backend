@@ -170,7 +170,7 @@ Auth:
 
 Behavior:
 
-- schema is generated dynamically from `app.routes`
+- schema is generated dynamically from the FastAPI app routes via `app.routes`
 
 ### 4.3 `GET /docs`
 

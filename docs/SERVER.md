@@ -30,6 +30,8 @@ sudo ./ops/run-safe.sh --name backend-deploy -- \
 - сохраняет metadata в `/var/tmp/ops-run-safe/<name>.env`
 - печатает команды для повторного подключения и проверки статуса
 
+Если SSH у сервера работает не на `22`, обязательно передавайте `SSH_PORT=...` в `deploy_production.sh` и `vpn-server.sh`, иначе можно закрыть себе доступ после применения firewall.
+
 После переподключения обычно полезно проверить:
 
 ```bash
@@ -39,7 +41,12 @@ tail -f /var/log/vpn-install.log
 
 Если нужен точный `systemd` unit последнего запуска, он лежит в metadata-файле в поле `UNIT=...`.
 
-Если вам нужен именно интерактивный запуск, используйте `tmux`. При наличии `xterm-kitty` terminfo он обычно работает корректно:
+```bash
+. /var/tmp/ops-run-safe/vpn-install.env
+systemctl status "$UNIT"
+```
+
+Если вам нужен именно интерактивный запуск и на сервере есть `tmux`, используйте его. При наличии `xterm-kitty` terminfo он обычно работает корректно:
 
 ```bash
 tmux new -As ops
@@ -213,6 +220,13 @@ setup-warp
 ```
 
 Ее можно запускать отдельно для повторной идемпотентной настройки.
+
+Если хотите запускать ее с переживанием SSH-разрыва:
+
+```bash
+sudo ./ops/run-safe.sh --name setup-warp -- \
+  bash ./ops/vpn-node/setup_warp.sh
+```
 
 ### Как проверить, что WARP реально работает
 
