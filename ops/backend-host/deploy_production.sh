@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 APP_PORT="${APP_PORT:-8000}"
 SSH_PORT="${SSH_PORT:-22}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 DOCKER_GPG_KEYRING="/etc/apt/keyrings/docker.asc"
 DOCKER_REPO_FILE="/etc/apt/sources.list.d/docker.list"

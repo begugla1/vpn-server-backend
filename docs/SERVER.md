@@ -2,9 +2,9 @@
 
 Этот файл описывает серверные скрипты проекта:
 
-- `deploy_production.sh` — подготовка backend-сервера
-- `vpn-server.sh` — подготовка VPN-ноды с 3X-UI
-- `setup_warp.sh` — настройка Cloudflare WARP proxy и routing rules для Xray
+- `ops/backend-host/deploy_production.sh` — подготовка backend-сервера
+- `ops/vpn-node/vpn-server.sh` — подготовка VPN-ноды с 3X-UI
+- `ops/vpn-node/setup_warp.sh` — настройка Cloudflare WARP proxy и routing rules для Xray
 
 Скрипты ориентированы на Debian/Ubuntu-хосты и рассчитаны на повторный безопасный запуск.
 
@@ -12,7 +12,7 @@
 
 ### Назначение
 
-`deploy_production.sh` подготавливает хост для запуска backend через Docker Compose и делает базовый hardening системы.
+`ops/backend-host/deploy_production.sh` подготавливает хост для запуска backend через Docker Compose и делает базовый hardening системы.
 
 ### Что делает скрипт
 
@@ -43,13 +43,13 @@
 В корне проекта должен существовать корректный `.env`.
 
 ```bash
-sudo ./deploy_production.sh
+sudo ./ops/backend-host/deploy_production.sh
 ```
 
 Если SSH работает не на `22`, можно переопределить порт:
 
 ```bash
-sudo SSH_PORT=2222 APP_PORT=8000 ./deploy_production.sh
+sudo SSH_PORT=2222 APP_PORT=8000 ./ops/backend-host/deploy_production.sh
 ```
 
 ### Что проверить после запуска
@@ -66,15 +66,15 @@ fail2ban-client status
 
 ### Назначение
 
-`vpn-server.sh` подготавливает сервер с 3X-UI/Xray и поддерживает безопасный update без разрушения существующей базы `x-ui.db`.
+`ops/vpn-node/vpn-server.sh` подготавливает сервер с 3X-UI/Xray и поддерживает безопасный update без разрушения существующей базы `x-ui.db`.
 
 ### Поддерживаемые команды
 
 ```bash
-sudo bash vpn-server.sh install
-sudo bash vpn-server.sh update
-sudo bash vpn-server.sh backup
-sudo bash vpn-server.sh version
+sudo bash ./ops/vpn-node/vpn-server.sh install
+sudo bash ./ops/vpn-node/vpn-server.sh update
+sudo bash ./ops/vpn-node/vpn-server.sh backup
+sudo bash ./ops/vpn-node/vpn-server.sh version
 ```
 
 ### Safety model
@@ -137,12 +137,12 @@ sudo bash vpn-server.sh version
 
 ### Cloudflare WARP routing
 
-`vpn-server.sh` теперь автоматически вызывает `setup_warp.sh` в обоих режимах:
+`ops/vpn-node/vpn-server.sh` теперь автоматически вызывает `ops/vpn-node/setup_warp.sh` в обоих режимах:
 
 - `install`
 - `update`
 
-Что делает `setup_warp.sh`:
+Что делает `ops/vpn-node/setup_warp.sh`:
 
 - ставит официальный пакет `cloudflare-warp`
 - переводит WARP в proxy mode
@@ -248,7 +248,7 @@ WARP_PROXY_PORT=40000
 ### Пример установки новой VPN-ноды
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 bash vpn-server.sh install
+sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
 ```
 
 С кастомными параметрами:
@@ -258,19 +258,19 @@ sudo BACKEND_IP=203.0.113.10 \
   X3UI_WEB_BASE_PATH=/secretpanel \
   X3UI_USERNAME=admin \
   X3UI_PASSWORD='strong-password-here' \
-  bash vpn-server.sh install
+  bash ./ops/vpn-node/vpn-server.sh install
 ```
 
 ### Пример безопасного update
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 bash vpn-server.sh update
+sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
 ```
 
 Если нужно временно отключить автонастройку WARP:
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false bash vpn-server.sh update
+sudo BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false bash ./ops/vpn-node/vpn-server.sh update
 ```
 
 ### Резервные копии
@@ -278,7 +278,7 @@ sudo BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false bash vpn-server.sh update
 Ручной backup:
 
 ```bash
-sudo bash vpn-server.sh backup
+sudo bash ./ops/vpn-node/vpn-server.sh backup
 ```
 
 Путь хранения:
@@ -339,4 +339,4 @@ fail2ban-client status
 ## 5. Связанные документы
 
 - `README.md` — обзор backend и быстрый старт
-- `PIPELINE_DOCS.md` — endpoint-ы, бизнес-правила и схема БД
+- `docs/PIPELINE.md` — endpoint-ы, бизнес-правила и схема БД
