@@ -5,8 +5,48 @@
 - `ops/backend-host/deploy_production.sh` — подготовка backend-сервера
 - `ops/vpn-node/vpn-server.sh` — подготовка VPN-ноды с 3X-UI
 - `ops/vpn-node/setup_warp.sh` — настройка Cloudflare WARP proxy и routing rules для Xray
+- `ops/run-safe.sh` — безопасный detached-запуск `ops`-команд, который переживает разрыв SSH
 
 Скрипты ориентированы на Debian/Ubuntu-хосты и рассчитаны на повторный безопасный запуск.
+
+## 0. Как запускать так, чтобы пережить разрыв SSH
+
+Эти `ops`-скрипты обновляют пакеты, перезапускают сервисы и меняют firewall, поэтому во время выполнения SSH-сессия может оборваться. Для таких запусков в репозиторий добавлен helper:
+
+```bash
+sudo ./ops/run-safe.sh --name vpn-install -- \
+  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+```
+
+```bash
+sudo ./ops/run-safe.sh --name backend-deploy -- \
+  APP_PORT=8000 bash ./ops/backend-host/deploy_production.sh
+```
+
+Что делает `ops/run-safe.sh`:
+
+- запускает команду через `systemd-run`, а если его нет, использует `nohup`
+- пишет лог в `/var/log/<name>.log`
+- сохраняет metadata в `/var/tmp/ops-run-safe/<name>.env`
+- печатает команды для повторного подключения и проверки статуса
+
+После переподключения обычно полезно проверить:
+
+```bash
+cat /var/tmp/ops-run-safe/vpn-install.env
+tail -f /var/log/vpn-install.log
+```
+
+Если нужен точный `systemd` unit последнего запуска, он лежит в metadata-файле в поле `UNIT=...`.
+
+Если вам нужен именно интерактивный запуск, используйте `tmux`. При наличии `xterm-kitty` terminfo он обычно работает корректно:
+
+```bash
+tmux new -As ops
+sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+```
+
+Для этих скриптов предпочтительнее `ops/run-safe.sh`, потому что они не требуют интерактивного ввода и лучше сочетаются с переподключением через SSH.
 
 ## 1. Backend-сервер
 
@@ -46,10 +86,24 @@
 sudo ./ops/backend-host/deploy_production.sh
 ```
 
+Для безопасного запуска с переживанием SSH-разрыва:
+
+```bash
+sudo ./ops/run-safe.sh --name backend-deploy -- \
+  bash ./ops/backend-host/deploy_production.sh
+```
+
 Если SSH работает не на `22`, можно переопределить порт:
 
 ```bash
 sudo SSH_PORT=2222 APP_PORT=8000 ./ops/backend-host/deploy_production.sh
+```
+
+Detached-вариант с кастомным SSH-портом:
+
+```bash
+sudo ./ops/run-safe.sh --name backend-deploy -- \
+  SSH_PORT=2222 APP_PORT=8000 bash ./ops/backend-host/deploy_production.sh
 ```
 
 ### Что проверить после запуска
@@ -251,6 +305,13 @@ WARP_PROXY_PORT=40000
 sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
 ```
 
+Detached-вариант:
+
+```bash
+sudo ./ops/run-safe.sh --name vpn-install -- \
+  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+```
+
 С кастомными параметрами:
 
 ```bash
@@ -265,6 +326,13 @@ sudo BACKEND_IP=203.0.113.10 \
 
 ```bash
 sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
+```
+
+Detached-вариант:
+
+```bash
+sudo ./ops/run-safe.sh --name vpn-update -- \
+  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
 ```
 
 Если нужно временно отключить автонастройку WARP:
