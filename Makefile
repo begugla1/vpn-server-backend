@@ -63,6 +63,12 @@ backend-deploy:
 backend-deploy-direct:
 	$(call AS_ROOT,env APP_PORT="$(APP_PORT)" SSH_PORT="$(SSH_PORT)" bash $(BACKEND_SCRIPT))
 
+prod-deploy:
+	sudo ./ops/backend-host/deploy_production.sh
+
+prod-db-backup:
+	sudo /usr/local/bin/backend-db-backup
+
 require-backend-ip:
 	@if [[ -z "$(BACKEND_IP)" ]]; then \
 		echo "BACKEND_IP is required. Example: make vpn-install BACKEND_IP=203.0.113.10"; \

@@ -12,6 +12,13 @@ DOCKER_DAEMON_CONFIG="/etc/docker/daemon.json"
 DOCKER_FIREWALL_SCRIPT="/usr/local/bin/vpn-backend-docker-firewall.sh"
 DOCKER_FIREWALL_SERVICE="/etc/systemd/system/vpn-backend-docker-firewall.service"
 
+DB_BACKUP_DIR="/var/backups/vpn-backend-postgres"
+DB_BACKUP_SCRIPT="/usr/local/bin/backend-db-backup"
+DB_BACKUP_CRON="/etc/cron.d/vpn-backend-db-backup"
+DB_BACKUP_RETENTION_DAYS="${DB_BACKUP_RETENTION_DAYS:-14}"
+DB_BACKUP_HOUR="${DB_BACKUP_HOUR:-3}"
+DB_BACKUP_MINUTE="${DB_BACKUP_MINUTE:-15}"
+
 log() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
@@ -42,6 +49,16 @@ validate_port() {
     (( port >= 1 && port <= 65535 )) || die "Port out of range: ${port}"
 }
 
+validate_uint_range() {
+    local value="$1"
+    local name="$2"
+    local min_value="$3"
+    local max_value="$4"
+
+    [[ "${value}" =~ ^[0-9]+$ ]] || die "${name} must be numeric: ${value}"
+    (( value >= min_value && value <= max_value )) || die "${name} out of range: ${value}"
+}
+
 install_base_packages() {
     log "Updating OS packages"
     apt-get update
@@ -53,10 +70,12 @@ install_base_packages() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         apt-listchanges \
         ca-certificates \
+        cron \
         curl \
         fail2ban \
         git \
         gnupg \
+        gzip \
         htop \
         iproute2 \
         iptables \
@@ -87,7 +106,7 @@ fs.inotify.max_user_watches = 524288
 vm.swappiness = 10
 EOF
 
-    sysctl --load /etc/sysctl.d/99-vpn-backend.conf >/dev/null
+    sysctl --system >/dev/null
 
     cat > /etc/security/limits.d/99-vpn-backend.conf <<'EOF'
 *    soft nofile  1048576
@@ -286,6 +305,54 @@ EOF
     chmod +x /usr/local/bin/backend-status
 }
 
+setup_postgres_backups() {
+    log "Configuring daily PostgreSQL backups"
+
+    install -d -m 0700 "${DB_BACKUP_DIR}"
+
+    cat > "${DB_BACKUP_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="${PROJECT_DIR}"
+BACKUP_DIR="${DB_BACKUP_DIR}"
+RETENTION_DAYS="${DB_BACKUP_RETENTION_DAYS}"
+
+cd "\${PROJECT_DIR}"
+set -a
+. "\${PROJECT_DIR}/.env"
+set +a
+
+timestamp="\$(date +%Y%m%d_%H%M%S)"
+backup_file="\${BACKUP_DIR}/postgres-\${timestamp}.sql.gz"
+tmp_file="\${backup_file}.tmp"
+
+mkdir -p "\${BACKUP_DIR}"
+chmod 700 "\${BACKUP_DIR}"
+
+docker compose ps --status running db >/dev/null 2>&1
+
+docker compose exec -T -e PGPASSWORD="\${POSTGRES_PASSWORD}" db \
+    pg_dump -U "\${POSTGRES_USER}" "\${POSTGRES_DB}" | gzip -9 > "\${tmp_file}"
+
+mv "\${tmp_file}" "\${backup_file}"
+chmod 600 "\${backup_file}"
+
+find "\${BACKUP_DIR}" -maxdepth 1 -type f -name 'postgres-*.sql.gz' -mtime +"\${RETENTION_DAYS}" -delete
+EOF
+
+    chmod 0755 "${DB_BACKUP_SCRIPT}"
+
+    cat > "${DB_BACKUP_CRON}" <<EOF
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+${DB_BACKUP_MINUTE} ${DB_BACKUP_HOUR} * * * root ${DB_BACKUP_SCRIPT} >> /var/log/vpn-backend-db-backup.log 2>&1
+EOF
+
+    chmod 0644 "${DB_BACKUP_CRON}"
+    systemctl restart cron >/dev/null 2>&1 || true
+}
+
 install_docker_user_firewall() {
     local external_iface
 
@@ -342,15 +409,22 @@ deploy_stack() {
     docker compose up -d --build
 }
 
+run_initial_db_backup() {
+    log "Creating initial PostgreSQL backup"
+    "${DB_BACKUP_SCRIPT}"
+}
+
 print_summary() {
     log "Deployment completed"
     log "Open inbound ports: TCP ${SSH_PORT}, TCP ${APP_PORT}"
     log "Security features enabled: UFW, DOCKER-USER guard, Fail2Ban, unattended-upgrades, journald limits, Docker log limits"
     log "Monitoring helper: /usr/local/bin/backend-status"
+    log "Database backups: daily at ${DB_BACKUP_HOUR}:$(printf '%02d' "${DB_BACKUP_MINUTE}") -> ${DB_BACKUP_DIR}"
     log "Useful checks:"
     log "  docker compose ps"
     log "  docker compose logs -f backend"
     log "  backend-status"
+    log "  ${DB_BACKUP_SCRIPT}"
     log "  curl -H 'Authorization: Bearer <BACKEND_API_TOKEN>' <your_backend_url>/health"
 }
 
@@ -359,6 +433,9 @@ main() {
     require_apt
     validate_port "${APP_PORT}"
     validate_port "${SSH_PORT}"
+    validate_uint_range "${DB_BACKUP_RETENTION_DAYS}" "DB_BACKUP_RETENTION_DAYS" 1 3650
+    validate_uint_range "${DB_BACKUP_HOUR}" "DB_BACKUP_HOUR" 0 23
+    validate_uint_range "${DB_BACKUP_MINUTE}" "DB_BACKUP_MINUTE" 0 59
     require_file "${PROJECT_DIR}/docker-compose.yml"
     require_file "${PROJECT_DIR}/.env"
 
@@ -370,9 +447,11 @@ main() {
     setup_fail2ban
     setup_log_management
     create_monitoring_script
+    setup_postgres_backups
     setup_unattended_upgrades
     install_docker_user_firewall
     deploy_stack
+    run_initial_db_backup
     print_summary
 }
 
