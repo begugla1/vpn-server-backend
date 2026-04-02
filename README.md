@@ -174,6 +174,24 @@ make safe-logs JOB=vpn-install
 make safe-status JOB=vpn-install
 ```
 
+## Ручная настройка WARP
+
+WARP из автоматической логики убран и настраивается вручную через панель 3X-UI.
+
+Справочный набор для routing rule:
+
+```env
+WARP_OUTBOUND_TAG=warp
+WARP_INBOUND_TAGS=inbound-443
+WARP_ROUTE_DOMAINS=geosite:openai,domain:chatgpt.com,domain:chat.openai.com,domain:openai.com,domain:auth.openai.com,domain:oaistatic.com,domain:anthropic.com,domain:claude.ai
+```
+
+Обычно в `Routing Rules` достаточно:
+
+- `Inbound Tags`: `inbound-443`
+- `Outbound Tag`: `warp`
+- `Domain`: значение из `WARP_ROUTE_DOMAINS`
+
 ## Документация
 
 - [docs/SERVER.md](docs/SERVER.md)
