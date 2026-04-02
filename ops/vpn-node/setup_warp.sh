@@ -80,6 +80,69 @@ EOF
   done
 }
 
+is_xray_template_json() {
+  local value="${1:-}"
+
+  [[ -n "${value}" ]] || return 1
+  printf '%s' "${value}" | jq -e '
+    type == "object"
+    and (.outbounds | type == "array")
+    and ((.routing // {}) | type == "object")
+  ' >/dev/null 2>&1
+}
+
+find_xray_template_key() {
+  local key
+  local value
+  local settings_dump
+  local line
+  local candidate_key
+  local candidate_value
+  local -a candidate_keys=()
+  local -a preferred_keys=(
+    "xrayTemplateConfig"
+    "xrayTemplate"
+    "templateConfig"
+    "xrayConfigTemplate"
+    "xrayConfig"
+  )
+
+  for key in "${preferred_keys[@]}"; do
+    value="$(run_sqlite_with_retry "SELECT value FROM settings WHERE key='${key}' LIMIT 1;")"
+    if is_xray_template_json "${value}"; then
+      printf '%s' "${key}"
+      return 0
+    fi
+  done
+
+  settings_dump="$(
+    sqlite3 "${DB_PATH}" <<EOF 2>/dev/null
+.timeout ${SQLITE_BUSY_TIMEOUT_MS}
+.mode tabs
+SELECT key, value FROM settings;
+EOF
+  )"
+
+  while IFS=$'\t' read -r candidate_key candidate_value; do
+    [[ -n "${candidate_key}" ]] || continue
+    if is_xray_template_json "${candidate_value}"; then
+      candidate_keys+=("${candidate_key}")
+    fi
+  done <<< "${settings_dump}"
+
+  if ((${#candidate_keys[@]} == 0)); then
+    return 1
+  fi
+
+  if ((${#candidate_keys[@]} > 1)); then
+    log "Multiple candidate Xray template keys found: ${candidate_keys[*]}. Using: ${candidate_keys[0]}"
+  else
+    log "Detected Xray template settings key: ${candidate_keys[0]}"
+  fi
+
+  printf '%s' "${candidate_keys[0]}"
+}
+
 install_prerequisites() {
   log "Installing WARP prerequisites"
   reset_cloudflare_repo_state
@@ -170,13 +233,15 @@ backup_xui_db() {
 }
 
 update_xray_template() {
+  local template_key
   local current_config
   local new_config
   local safe_new_config
   local changes_output
 
-  current_config="$(run_sqlite_with_retry "SELECT value FROM settings WHERE key='xrayTemplateConfig' LIMIT 1;")"
-  [[ -n "${current_config}" ]] || die "xrayTemplateConfig was not found in ${DB_PATH}"
+  template_key="$(find_xray_template_key)" || die "No Xray template setting was found in ${DB_PATH}. Open 3X-UI panel, save the Xray configuration template once, then rerun setup-warp."
+  current_config="$(run_sqlite_with_retry "SELECT value FROM settings WHERE key='${template_key}' LIMIT 1;")"
+  is_xray_template_json "${current_config}" || die "Xray template setting '${template_key}' is missing or has unexpected JSON format in ${DB_PATH}"
 
   new_config="$(printf '%s' "${current_config}" | jq \
     --argjson warp_port "${WARP_PROXY_PORT}" \
@@ -206,16 +271,16 @@ update_xray_template() {
   changes_output="$(run_sqlite_with_retry "$(cat <<EOF
 UPDATE settings
 SET value='${safe_new_config}'
-WHERE key='xrayTemplateConfig';
+WHERE key='${template_key}';
 SELECT changes();
 EOF
 )")"
 
   if [[ "$(printf '%s' "${changes_output}" | tail -n1)" != "1" ]]; then
-    die "Failed to update xrayTemplateConfig in ${DB_PATH}"
+    die "Failed to update Xray template setting '${template_key}' in ${DB_PATH}"
   fi
 
-  log "Updated xrayTemplateConfig with WARP outbound and routing rules"
+  log "Updated Xray template setting '${template_key}' with WARP outbound and routing rules"
 }
 
 restart_xui() {
