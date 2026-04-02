@@ -9,18 +9,22 @@
 
 Скрипты ориентированы на Debian/Ubuntu-хосты и рассчитаны на повторный безопасный запуск.
 
+Если не хотите помнить длинные команды, используйте корневой `Makefile`:
+
+```bash
+make help
+```
+
 ## 0. Как запускать так, чтобы пережить разрыв SSH
 
 Эти `ops`-скрипты обновляют пакеты, перезапускают сервисы и меняют firewall, поэтому во время выполнения SSH-сессия может оборваться. Для таких запусков в репозиторий добавлен helper:
 
 ```bash
-sudo ./ops/run-safe.sh --name vpn-install -- \
-  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+make vpn-install BACKEND_IP=203.0.113.10
 ```
 
 ```bash
-sudo ./ops/run-safe.sh --name backend-deploy -- \
-  APP_PORT=8000 bash ./ops/backend-host/deploy_production.sh
+make backend-deploy
 ```
 
 Что делает `ops/run-safe.sh`:
@@ -35,22 +39,21 @@ sudo ./ops/run-safe.sh --name backend-deploy -- \
 После переподключения обычно полезно проверить:
 
 ```bash
-cat /var/tmp/ops-run-safe/vpn-install.env
-tail -f /var/log/vpn-install.log
+make safe-info JOB=vpn-install
+make safe-logs JOB=vpn-install
 ```
 
 Если нужен точный `systemd` unit последнего запуска, он лежит в metadata-файле в поле `UNIT=...`.
 
 ```bash
-. /var/tmp/ops-run-safe/vpn-install.env
-systemctl status "$UNIT"
+make safe-status JOB=vpn-install
 ```
 
 Если вам нужен именно интерактивный запуск и на сервере есть `tmux`, используйте его. При наличии `xterm-kitty` terminfo он обычно работает корректно:
 
 ```bash
 tmux new -As ops
-sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+make vpn-install-direct BACKEND_IP=203.0.113.10
 ```
 
 Для этих скриптов предпочтительнее `ops/run-safe.sh`, потому что они не требуют интерактивного ввода и лучше сочетаются с переподключением через SSH.
@@ -90,27 +93,25 @@ sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
 В корне проекта должен существовать корректный `.env`.
 
 ```bash
-sudo ./ops/backend-host/deploy_production.sh
+make backend-deploy-direct
 ```
 
 Для безопасного запуска с переживанием SSH-разрыва:
 
 ```bash
-sudo ./ops/run-safe.sh --name backend-deploy -- \
-  bash ./ops/backend-host/deploy_production.sh
+make backend-deploy
 ```
 
 Если SSH работает не на `22`, можно переопределить порт:
 
 ```bash
-sudo SSH_PORT=2222 APP_PORT=8000 ./ops/backend-host/deploy_production.sh
+make backend-deploy-direct SSH_PORT=2222 APP_PORT=8000
 ```
 
 Detached-вариант с кастомным SSH-портом:
 
 ```bash
-sudo ./ops/run-safe.sh --name backend-deploy -- \
-  SSH_PORT=2222 APP_PORT=8000 bash ./ops/backend-host/deploy_production.sh
+make backend-deploy SSH_PORT=2222 APP_PORT=8000
 ```
 
 ### Что проверить после запуска
@@ -132,10 +133,10 @@ fail2ban-client status
 ### Поддерживаемые команды
 
 ```bash
-sudo bash ./ops/vpn-node/vpn-server.sh install
-sudo bash ./ops/vpn-node/vpn-server.sh update
-sudo bash ./ops/vpn-node/vpn-server.sh backup
-sudo bash ./ops/vpn-node/vpn-server.sh version
+make vpn-install BACKEND_IP=203.0.113.10
+make vpn-update BACKEND_IP=203.0.113.10
+make vpn-backup
+make vpn-version
 ```
 
 ### Safety model
@@ -224,8 +225,7 @@ setup-warp
 Если хотите запускать ее с переживанием SSH-разрыва:
 
 ```bash
-sudo ./ops/run-safe.sh --name setup-warp -- \
-  bash ./ops/vpn-node/setup_warp.sh
+make warp-setup
 ```
 
 ### Как проверить, что WARP реально работает
@@ -316,14 +316,13 @@ WARP_PROXY_PORT=40000
 ### Пример установки новой VPN-ноды
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+make vpn-install-direct BACKEND_IP=203.0.113.10
 ```
 
 Detached-вариант:
 
 ```bash
-sudo ./ops/run-safe.sh --name vpn-install -- \
-  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh install
+make vpn-install BACKEND_IP=203.0.113.10
 ```
 
 С кастомными параметрами:
@@ -339,20 +338,19 @@ sudo BACKEND_IP=203.0.113.10 \
 ### Пример безопасного update
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
+make vpn-update-direct BACKEND_IP=203.0.113.10
 ```
 
 Detached-вариант:
 
 ```bash
-sudo ./ops/run-safe.sh --name vpn-update -- \
-  BACKEND_IP=203.0.113.10 bash ./ops/vpn-node/vpn-server.sh update
+make vpn-update BACKEND_IP=203.0.113.10
 ```
 
 Если нужно временно отключить автонастройку WARP:
 
 ```bash
-sudo BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false bash ./ops/vpn-node/vpn-server.sh update
+make vpn-update BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false
 ```
 
 ### Резервные копии
@@ -360,7 +358,7 @@ sudo BACKEND_IP=203.0.113.10 ENABLE_WARP_ROUTING=false bash ./ops/vpn-node/vpn-s
 Ручной backup:
 
 ```bash
-sudo bash ./ops/vpn-node/vpn-server.sh backup
+make vpn-backup
 ```
 
 Путь хранения:
