@@ -655,6 +655,8 @@ setup_warp_routing() {
   BACKUP_DIR="$BACKUP_DIR" \
   XUI_DB="$XUI_DB" \
   WARP_PROXY_PORT="$WARP_PROXY_PORT" \
+  SQLITE_BUSY_TIMEOUT_MS="$SQLITE_BUSY_TIMEOUT_MS" \
+  SQLITE_RETRY_ATTEMPTS="$SQLITE_RETRY_ATTEMPTS" \
   bash /usr/local/bin/setup-warp
 
   log_success "Cloudflare WARP routing configured"

@@ -44,6 +44,15 @@ require_xui_db() {
   [[ -f "${DB_PATH}" ]] || die "3X-UI database not found: ${DB_PATH}"
 }
 
+reset_cloudflare_repo_state() {
+  if [[ -f "${REPO_PATH}" ]] || [[ -f "${KEYRING_PATH}" ]]; then
+    log "Removing stale Cloudflare APT repo state"
+  fi
+
+  rm -f "${REPO_PATH}"
+  rm -f "${KEYRING_PATH}"
+}
+
 run_sqlite_with_retry() {
   local sql="$1"
   local attempt
@@ -73,6 +82,7 @@ EOF
 
 install_prerequisites() {
   log "Installing WARP prerequisites"
+  reset_cloudflare_repo_state
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates \
@@ -91,6 +101,7 @@ configure_cloudflare_repo() {
 
   curl -fsSL "https://pkg.cloudflareclient.com/pubkey.gpg" \
     | gpg --yes --dearmor --output "${KEYRING_PATH}"
+  chmod a+r "${KEYRING_PATH}"
 
   cat > "${REPO_PATH}" <<EOF
 deb [signed-by=${KEYRING_PATH}] https://pkg.cloudflareclient.com/ ${distro_codename} main
