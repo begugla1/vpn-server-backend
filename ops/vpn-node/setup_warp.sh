@@ -7,6 +7,7 @@ DB_PATH="${XUI_DB:-/etc/x-ui/x-ui.db}"
 BACKUP_DIR="${BACKUP_DIR:-/root/x-ui-backups}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
+XRAY_CONFIG_PATH="${XRAY_CONFIG_PATH:-/usr/local/x-ui/bin/config.json}"
 KEYRING_PATH="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
 REPO_PATH="/etc/apt/sources.list.d/cloudflare-client.list"
 WARP_DOMAINS_JSON='[
@@ -143,6 +144,54 @@ EOF
   printf '%s' "${candidate_keys[0]}"
 }
 
+build_warp_enabled_config() {
+  local source_config="$1"
+
+  printf '%s' "${source_config}" | jq \
+    --argjson warp_port "${WARP_PROXY_PORT}" \
+    --argjson warp_domains "${WARP_DOMAINS_JSON}" '
+      .outbounds = ((.outbounds // []) | map(select(.tag != "warp")) + [{
+        "tag": "warp",
+        "protocol": "socks",
+        "settings": {
+          "servers": [
+            {
+              "address": "127.0.0.1",
+              "port": $warp_port
+            }
+          ]
+        }
+      }]) |
+      .routing = (.routing // {}) |
+      .routing.rules = ((.routing.rules // []) | map(select((.outboundTag // "") != "warp"))) |
+      .routing.rules = [{
+        "type": "field",
+        "outboundTag": "warp",
+        "domain": $warp_domains
+      }] + .routing.rules
+    '
+}
+
+seed_xray_template_from_config_file() {
+  local current_config="$1"
+  local safe_config
+  local changes_output
+
+  safe_config="$(printf '%s' "${current_config}" | sed "s/'/''/g")"
+  changes_output="$(run_sqlite_with_retry "$(cat <<EOF
+INSERT OR REPLACE INTO settings (key, value)
+VALUES ('xrayTemplateConfig', '${safe_config}');
+SELECT changes();
+EOF
+)")"
+
+  if [[ "$(printf '%s' "${changes_output}" | tail -n1)" != "1" ]]; then
+    die "Failed to seed xrayTemplateConfig in ${DB_PATH}"
+  fi
+
+  log "Seeded xrayTemplateConfig in ${DB_PATH} from ${XRAY_CONFIG_PATH}"
+}
+
 install_prerequisites() {
   log "Installing WARP prerequisites"
   reset_cloudflare_repo_state
@@ -239,33 +288,19 @@ update_xray_template() {
   local safe_new_config
   local changes_output
 
-  template_key="$(find_xray_template_key)" || die "No Xray template setting was found in ${DB_PATH}. Open 3X-UI panel, save the Xray configuration template once, then rerun setup-warp."
+  template_key="$(find_xray_template_key || true)"
+  if [[ -z "${template_key}" ]]; then
+    [[ -f "${XRAY_CONFIG_PATH}" ]] || die "No Xray template setting was found in ${DB_PATH}, and config file was not found at ${XRAY_CONFIG_PATH}"
+    current_config="$(cat "${XRAY_CONFIG_PATH}")"
+    is_xray_template_json "${current_config}" || die "No Xray template setting was found in ${DB_PATH}, and ${XRAY_CONFIG_PATH} does not contain expected Xray JSON"
+    seed_xray_template_from_config_file "${current_config}"
+    template_key="xrayTemplateConfig"
+  fi
+
   current_config="$(run_sqlite_with_retry "SELECT value FROM settings WHERE key='${template_key}' LIMIT 1;")"
   is_xray_template_json "${current_config}" || die "Xray template setting '${template_key}' is missing or has unexpected JSON format in ${DB_PATH}"
 
-  new_config="$(printf '%s' "${current_config}" | jq \
-    --argjson warp_port "${WARP_PROXY_PORT}" \
-    --argjson warp_domains "${WARP_DOMAINS_JSON}" '
-      .outbounds = ((.outbounds // []) | map(select(.tag != "warp")) + [{
-        "tag": "warp",
-        "protocol": "socks",
-        "settings": {
-          "servers": [
-            {
-              "address": "127.0.0.1",
-              "port": $warp_port
-            }
-          ]
-        }
-      }]) |
-      .routing = (.routing // {}) |
-      .routing.rules = ((.routing.rules // []) | map(select((.outboundTag // "") != "warp"))) |
-      .routing.rules = [{
-        "type": "field",
-        "outboundTag": "warp",
-        "domain": $warp_domains
-      }] + .routing.rules
-    ')" || die "Failed to patch xrayTemplateConfig JSON."
+  new_config="$(build_warp_enabled_config "${current_config}")" || die "Failed to patch Xray template JSON."
 
   safe_new_config="$(printf '%s' "${new_config}" | sed "s/'/''/g")"
   changes_output="$(run_sqlite_with_retry "$(cat <<EOF
