@@ -304,7 +304,7 @@ net.ipv6.conf.all.forwarding = 1
 EOF
 
   modprobe nf_conntrack 2>/dev/null || true
-  sysctl --system >/dev/null
+  sysctl --load /etc/sysctl.d/99-vpn-server-tuning.conf >/dev/null
 
   cat > /etc/security/limits.d/99-vpn-server.conf <<'EOF'
 *    soft nofile  1048576

@@ -87,7 +87,7 @@ fs.inotify.max_user_watches = 524288
 vm.swappiness = 10
 EOF
 
-    sysctl --system >/dev/null
+    sysctl --load /etc/sysctl.d/99-vpn-backend.conf >/dev/null
 
     cat > /etc/security/limits.d/99-vpn-backend.conf <<'EOF'
 *    soft nofile  1048576
