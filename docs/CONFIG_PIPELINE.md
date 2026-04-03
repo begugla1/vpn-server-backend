@@ -1,42 +1,31 @@
 # Setup Pipeline
 
-Этот документ описывает полный production pipeline:
+Этот документ описывает актуальный production pipeline:
 
-- настройка backend-хоста
-- настройка новой VPN-ноды
-- ручное создание VLESS inbound в 3X-UI
-- добавление сервера в backend БД
-- синхронизация inbound-ов в backend
+- поднять backend-хост
+- поднять новую VPN-ноду
+- вручную довести панель 3X-UI до нужной конфигурации
+- зарегистрировать сервер в backend
+- синхронизировать inbound-ы
 
 ## 1. Что подготовить заранее
 
-Перед началом нужно знать:
+Перед началом нужны:
 
 - публичный IP backend-хоста
-- backend URL
 - `BACKEND_API_TOKEN`
 - SSH-доступ к backend-хосту
 - SSH-доступ к VPN-ноде
-- значения 3X-UI:
-  - `X3UI_PORT`
-  - `X3UI_SUB_PORT`
-  - `X3UI_WEB_BASE_PATH`
-  - `X3UI_USERNAME`
-  - `X3UI_PASSWORD`
+- публичный IP VPN-ноды
 
-Рекомендуемые значения проекта:
+Важно:
 
-- `X3UI_PORT=65000`
-- `X3UI_SUB_PORT=2096`
-- `X3UI_WEB_BASE_PATH=/secretpanel`
-- `use_https=true`
-- `max_subscriptions=110-130`
+- `vpn-server.sh` больше не выставляет panel port, `webBasePath`, username, password и subscription path автоматически
+- после установки реальные параметры панели берите из `/root/.vpn-server-credentials`
 
 ## 2. Backend Host Pipeline
 
 ### 2.1 Подготовить `.env`
-
-На backend-хосте должен существовать рабочий `.env`.
 
 Минимально обязательные переменные:
 
@@ -53,37 +42,24 @@ DEFAULT_XUI_USERNAME=admin
 DEFAULT_XUI_PASSWORD=admin
 DEFAULT_XUI_PORT=65000
 DEFAULT_XUI_WEB_BASE_PATH=/
-DEFAULT_SERVER_MAX_SUBSCRIPTIONS=150
+DEFAULT_SERVER_MAX_SUBSCRIPTIONS=120
 ```
 
-### 2.2 Запустить backend deploy
+Эти `DEFAULT_XUI_*` значения используются только как backend defaults при создании нового server record. Они не заставляют `vpn-server.sh` менять саму панель.
 
-Стандартный запуск:
+### 2.2 Запустить deploy
+
+Рекомендуемый запуск:
 
 ```bash
-sudo ./ops/backend-host/deploy_production.sh
+make backend-deploy
 ```
 
-Если нужно переопределить переменные при запуске:
+Если нужен кастомный SSH-порт:
 
 ```bash
-sudo \
-  APP_PORT=8000 \
-  SSH_PORT=22 \
-  DB_BACKUP_RETENTION_DAYS=14 \
-  DB_BACKUP_HOUR=3 \
-  DB_BACKUP_MINUTE=15 \
-  ./ops/backend-host/deploy_production.sh
+make backend-deploy SSH_PORT=2222 APP_PORT=8000
 ```
-
-Что делает скрипт:
-
-- ставит Docker и `docker compose`
-- открывает `22/tcp` и `8000/tcp`
-- настраивает `ufw`, `fail2ban`, `DOCKER-USER`
-- запускает backend и PostgreSQL
-- прогоняет `alembic upgrade head`
-- настраивает ежедневный backup PostgreSQL
 
 ### 2.3 Проверка backend-хоста
 
@@ -93,122 +69,113 @@ docker compose ps
 docker compose logs -f backend
 ufw status verbose
 fail2ban-client status
-sudo /usr/local/bin/backend-db-backup
 ```
-
-### 2.4 Нужно ли менять firewall backend-хоста
-
-Обычно нет.
-
-С текущим `deploy_production.sh` backend уже принимает:
-
-- `22/tcp`
-- `8000/tcp`
-
-Это значит:
-
-- для отправки API-запросов на backend дополнительный firewall update не нужен
-- для исходящих запросов backend -> VPN-нода ничего открывать не нужно, исходящий трафик разрешен
-
-Дополнительный firewall update нужен только если вы потом сами ужесточите доступ к `8000/tcp` и переведете его на whitelist по IP.
 
 ## 3. VPN Node Pipeline
 
-### 3.1 Выбрать переменные перед запуском
+### 3.1 Установить ноду
 
-Минимально нужно задать:
+Минимальный запуск:
 
-- `BACKEND_IP`
-- `X3UI_PORT`
+```bash
+make vpn-install BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
+```
+
+Если нужен прямой запуск в текущей SSH-сессии:
+
+```bash
+make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
+```
+
+Полезные override-переменные:
+
+- `SSH_PORT`
 - `X3UI_SUB_PORT`
+- `ENABLE_BBR`
+- `ENABLE_FIREWALL`
+- `WARP_PROXY_PORT`
+- `PANEL_CERT_DAYS`
+
+Дополнительные переменные для firewall и сохранения credentials:
+
+- `X3UI_PORT`
 - `X3UI_WEB_BASE_PATH`
+- `X3UI_SUB_PATH`
 - `X3UI_USERNAME`
 - `X3UI_PASSWORD`
 
-Рекомендуемый запуск:
+### 3.2 Что делает install
 
-```bash
-sudo \
-  BACKEND_IP=<PUBLIC_BACKEND_IP> \
-  X3UI_PORT=65000 \
-  X3UI_SUB_PORT=2096 \
-  X3UI_WEB_BASE_PATH=/secretpanel \
-  X3UI_USERNAME=admin \
-  X3UI_PASSWORD='<strong-password>' \
-  SSH_PORT=22 \
-  ENABLE_BBR=true \
-  ENABLE_FIREWALL=true \
-  ENABLE_WARP_ROUTING=true \
-  WARP_PROXY_PORT=40000 \
-  bash ./ops/vpn-node/vpn-server.sh install
-```
-
-Что делает скрипт:
+Скрипт:
 
 - ставит 3X-UI
-- включает firewall
-- открывает:
-  - `22/tcp`
-  - `443/tcp` для всех
-  - `65000/tcp` только для `BACKEND_IP`
-  - `2096/tcp` только для `BACKEND_IP`
-- ставит `fail2ban`
-- ставит `unattended-upgrades`
-- настраивает WARP routing
-- ставит backup job для `x-ui.db`
+- сохраняет install log в `/root/.vpn-server-3x-ui-install.log`
+- создает self-signed сертификат `/root/cert/x-ui.crt` и `/root/cert/x-ui.key`
+- привязывает этот сертификат к панели
+- ставит официальный `warp-cli`
+- регистрирует WARP и включает local proxy на `127.0.0.1:40000`
+- настраивает firewall, `fail2ban`, backup `x-ui.db`
 
-### 3.2 Проверка VPN-ноды
+### 3.3 Что проверить сразу после install
 
 ```bash
+cat /root/.vpn-server-credentials
 vpn-status
 systemctl status x-ui
-warp-cli --accept-tos status
 systemctl status warp-svc
+warp-cli --accept-tos status
 ufw status verbose
-fail2ban-client status
 ```
 
-Сохрани файл:
+Файл `/root/.vpn-server-credentials` содержит:
 
-```bash
-/root/.vpn-server-credentials
-```
+- фактический panel URL
+- текущий username
+- password, если его удалось вытащить из install log
+- subscription port hint
+- локальный WARP proxy
+- пути к сертификату
 
-## 4. Ручное создание VLESS inbound в 3X-UI
+## 4. Ручная настройка панели 3X-UI
 
 ### 4.1 Войти в панель
 
-Если использовались дефолты:
+Откройте URL из `/root/.vpn-server-credentials`.
 
-```text
-https://<VPN_SERVER_IP>:65000/secretpanel
-```
+Если вы потом меняете panel port, `webBasePath`, username или password:
 
-Если вы меняли переменные при установке, подставьте свои:
+- обновите firewall при необходимости
+- используйте эти новые реальные значения при создании server record в backend
 
-- `X3UI_PORT`
-- `X3UI_WEB_BASE_PATH`
+### 4.2 Настроить panel settings вручную
 
-### 4.2 Создать inbound вручную
+Скрипт этого больше не делает. В панели вручную задайте все нужное под свою модель:
 
-Нужно вручную создать production VLESS inbound в панели 3X-UI.
+- panel port
+- `webBasePath`
+- username/password
+- subscription port и subscription path
 
-Минимальные требования:
+### 4.3 Донастроить WARP в 3X-UI
+
+Скрипт готовит только локальный proxy на стороне ОС. В самой панели нужно вручную:
+
+- создать outbound, который использует локальный proxy `127.0.0.1:40000`
+- создать routing rules для нужных inbound-ов и доменов
+
+### 4.4 Создать inbound вручную
+
+Нужно вручную создать production inbound в 3X-UI.
+
+Минимально:
 
 - protocol: `VLESS`
 - inbound должен быть `enabled`
-- рабочий клиентский порт должен совпадать с вашей production-моделью
-- Reality/TLS/SNI/target site настраиваются вручную под ваш шаблон
+- порт и stream settings должны соответствовать вашей production-схеме
 
-Важно:
+## 5. Добавить VPN-сервер в backend
 
-- backend сейчас не создает production inbound автоматически
-- backend дальше только синхронизирует уже существующий inbound из панели
-- если inbound disabled, auto-allocation на него не пойдет
-
-## 5. Добавить VPN-сервер в backend БД
-
-### 5.1 Подготовить переменные для запросов
+### 5.1 Подготовить переменные
 
 ```bash
 export BACKEND_URL="http://<BACKEND_HOST>:8000"
@@ -220,6 +187,8 @@ export VPN_IP="<VPN_SERVER_PUBLIC_IP>"
 
 ### 5.2 Создать server record
 
+Подставьте реальные значения панели после ручной настройки:
+
 ```bash
 curl -X POST "${BACKEND_URL}/api/v1/servers/" \
   -H "Authorization: Bearer ${API_TOKEN}" \
@@ -229,8 +198,8 @@ curl -X POST "${BACKEND_URL}/api/v1/servers/" \
     "ip_address": "'"${VPN_IP}"'",
     "panel_port": 65000,
     "panel_username": "admin",
-    "panel_password": "<strong-password>",
-    "web_base_path": "/secretpanel",
+    "panel_password": "admin",
+    "web_base_path": "/",
     "use_https": true,
     "subscription_port": 2096,
     "subscription_base_path": "/sub/",
@@ -241,40 +210,31 @@ curl -X POST "${BACKEND_URL}/api/v1/servers/" \
 
 Должны совпадать:
 
-- `panel_port` = `X3UI_PORT`
-- `panel_username` = `X3UI_USERNAME`
-- `panel_password` = `X3UI_PASSWORD`
-- `web_base_path` = `X3UI_WEB_BASE_PATH`
-- `subscription_port` = `X3UI_SUB_PORT`
+- `panel_port`
+- `panel_username`
+- `panel_password`
+- `web_base_path`
+- `subscription_port`
+- `subscription_base_path`
 
-### 5.3 Важный момент по `subscription_base_path`
+Если вы уже поменяли панель на нестандартные значения, не оставляйте тут дефолты.
 
-Если вы используете стандартную схему проекта, оставляйте:
-
-```json
-"subscription_base_path": "/sub/"
-```
-
-Если subscription path в 3X-UI менялся вручную, backend server record должен совпадать с реальным subscription URL. Иначе backend будет собирать неправильные subscription links.
-
-## 6. Проверить backend -> panel connectivity
-
-После создания server record полезно сразу проверить доступность панели через backend:
+### 5.3 Проверить доступность панели через backend
 
 ```bash
 curl -H "Authorization: Bearer ${API_TOKEN}" \
   "${BACKEND_URL}/api/v1/servers/<SERVER_ID>/status"
 ```
 
-Если не работает, проверь:
+Если не работает, проверьте:
 
-- правильно ли указан `BACKEND_IP` на VPN-ноде
+- правильный ли `BACKEND_IP` указан при установке ноды
 - совпадают ли `panel_port`, `web_base_path`, `panel_username`, `panel_password`
 - действительно ли панель отвечает по `HTTPS`
 
-## 7. Синхронизировать inbound-ы в backend
+## 6. Синхронизировать inbound-ы
 
-### 7.1 Запустить sync
+### 6.1 Запустить sync
 
 ```bash
 curl -X POST \
@@ -282,7 +242,7 @@ curl -X POST \
   "${BACKEND_URL}/api/v1/inbounds/sync/<SERVER_ID>"
 ```
 
-### 7.2 Проверить список inbound-ов
+### 6.2 Проверить список inbound-ов
 
 ```bash
 curl -H "Authorization: Bearer ${API_TOKEN}" \
@@ -295,121 +255,32 @@ curl -H "Authorization: Bearer ${API_TOKEN}" \
 - `enable=true`
 - `protocol` и `port` совпадают с 3X-UI
 
-## 8. Что еще важно после sync
+## 7. Что еще важно после sync
 
 Нужно проверить:
 
 1. `server.is_active=true`
-2. у сервера есть хотя бы один `enabled` inbound
+2. у сервера есть хотя бы один enabled inbound
 3. `max_subscriptions` выставлен под реальную емкость ноды
 4. backend реально видит inbound после sync
 
 Без этого `create_subscription_with_any_available_server` не сможет выбрать ноду.
 
-## 9. Короткий pipeline новой ноды
-
-### 9.1 Backend host
-
-```bash
-sudo ./ops/backend-host/deploy_production.sh
-```
-
-Переменные при необходимости:
-
-- `APP_PORT`
-- `SSH_PORT`
-- `DB_BACKUP_RETENTION_DAYS`
-- `DB_BACKUP_HOUR`
-- `DB_BACKUP_MINUTE`
-
-### 9.2 VPN node
-
-```bash
-sudo \
-  BACKEND_IP=<PUBLIC_BACKEND_IP> \
-  X3UI_PORT=65000 \
-  X3UI_SUB_PORT=2096 \
-  X3UI_WEB_BASE_PATH=/secretpanel \
-  X3UI_USERNAME=admin \
-  X3UI_PASSWORD='<strong-password>' \
-  SSH_PORT=22 \
-  ENABLE_BBR=true \
-  ENABLE_FIREWALL=true \
-  ENABLE_WARP_ROUTING=true \
-  WARP_PROXY_PORT=40000 \
-  bash ./ops/vpn-node/vpn-server.sh install
-```
-
-### 9.3 Ручной inbound
-
-- зайти в панель
-- вручную создать production VLESS inbound
-- убедиться, что inbound enabled
-
-### 9.4 Добавить server record
-
-```bash
-curl -X POST "${BACKEND_URL}/api/v1/servers/" \
-  -H "Authorization: Bearer ${API_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "node-1",
-    "ip_address": "'"${VPN_IP}"'",
-    "panel_port": 65000,
-    "panel_username": "admin",
-    "panel_password": "<strong-password>",
-    "web_base_path": "/secretpanel",
-    "use_https": true,
-    "subscription_port": 2096,
-    "subscription_base_path": "/sub/",
-    "max_subscriptions": 120,
-    "is_active": true
-  }'
-```
-
-### 9.5 Проверить статус сервера
-
-```bash
-curl -H "Authorization: Bearer ${API_TOKEN}" \
-  "${BACKEND_URL}/api/v1/servers/<SERVER_ID>/status"
-```
-
-### 9.6 Синхронизировать inbound-ы
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer ${API_TOKEN}" \
-  "${BACKEND_URL}/api/v1/inbounds/sync/<SERVER_ID>"
-```
-
-### 9.7 Проверить inbound-ы
-
-```bash
-curl -H "Authorization: Bearer ${API_TOKEN}" \
-  "${BACKEND_URL}/api/v1/inbounds/?server_id=<SERVER_ID>"
-```
-
-## 10. Частые ошибки
+## 8. Частые ошибки
 
 - На VPN-ноде указан неправильный `BACKEND_IP`
 - В backend server record не совпадают `panel_port`, `web_base_path`, `panel_username`, `panel_password`
 - Панель недоступна по `HTTPS`
 - Inbound создан, но не включен
 - После ручного создания inbound забыли выполнить `sync`
-- В backend забыли передать `Authorization: Bearer <BACKEND_API_TOKEN>`
+- Вручную поменяли panel port, но не обновили firewall
+- Ожидается, что WARP routing заработает сам по себе, хотя в 3X-UI не был создан outbound/rule
 
-## 11. Что не требуется
+## 9. Что не требуется
 
 Сейчас не требуется:
 
-- вручную открывать дополнительные порты для WARP
-- менять firewall backend-хоста для исходящего доступа на VPN-ноду
-- вручную создавать inbound в backend через `POST /inbounds/`, если уже был сделан `sync`
-
-Для production pipeline достаточно:
-
-- поднять backend host
-- поднять VPN-ноду
-- вручную создать inbound в 3X-UI
-- зарегистрировать сервер в backend
-- выполнить sync inbound-ов
+- вручную устанавливать `warp-cli`
+- вручную выпускать self-signed сертификат для 3X-UI
+- вручную открывать отдельный внешний порт для WARP proxy
+- менять firewall backend-хоста для исходящего доступа к VPN-ноде

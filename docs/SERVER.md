@@ -2,21 +2,15 @@
 
 Этот файл описывает серверные скрипты проекта:
 
-- `ops/backend-host/deploy_production.sh` — подготовка backend-сервера
-- `ops/vpn-node/vpn-server.sh` — подготовка VPN-ноды с 3X-UI
-- `ops/run-safe.sh` — detached-запуск `ops`-команд, который переживает разрыв SSH
+- `ops/backend-host/deploy_production.sh` — подготовка backend-хоста
+- `ops/vpn-node/vpn-server.sh` — подготовка VPN-ноды с 3X-UI, self-signed HTTPS и локальным WARP proxy
+- `ops/run-safe.sh` — detached-запуск ops-команд, который переживает разрыв SSH
 
-Скрипты ориентированы на Debian/Ubuntu-хосты и рассчитаны на повторный безопасный запуск.
+Скрипты рассчитаны на Debian/Ubuntu и допускают повторный безопасный запуск.
 
-Если не хотите помнить длинные команды, используйте корневой `Makefile`:
+## 1. Безопасный запуск через `run-safe`
 
-```bash
-make help
-```
-
-## 0. Как запускать так, чтобы пережить разрыв SSH
-
-Эти `ops`-скрипты обновляют пакеты, перезапускают сервисы и меняют firewall, поэтому во время выполнения SSH-сессия может оборваться.
+`ops`-скрипты обновляют пакеты, перезапускают сервисы и меняют firewall, поэтому SSH-сессия может оборваться.
 
 Рекомендуемый запуск:
 
@@ -39,43 +33,36 @@ make safe-logs JOB=vpn-install
 make safe-status JOB=vpn-install
 ```
 
-Если нужен интерактивный запуск и на сервере есть `tmux`:
+Если нужен запуск прямо в текущей SSH-сессии:
 
 ```bash
-tmux new -As ops
 make vpn-install-direct BACKEND_IP=203.0.113.10 ADMIN_IP=198.51.100.25
 ```
 
-## 1. Backend-сервер
+## 2. Backend Host
 
-### Назначение
+### Что делает `deploy_production.sh`
 
-`ops/backend-host/deploy_production.sh` подготавливает хост для запуска backend через Docker Compose и делает базовый hardening системы.
-
-### Что делает скрипт
-
-- обновляет систему и пакеты
+- обновляет систему
 - ставит Docker Engine и `docker compose`
 - включает `ufw`
-- ограничивает опубликованные Docker-порты через `DOCKER-USER`
+- ограничивает Docker-порты через `DOCKER-USER`
 - настраивает `fail2ban`
 - включает `unattended-upgrades`
 - ограничивает размер journald-логов
-- применяет безопасные `sysctl` и лимиты открытых файлов
-- создает helper-команду `backend-status`
+- применяет безопасные `sysctl` и лимиты
 - запускает `docker compose`
-- применяет миграции Alembic
+- прогоняет `alembic upgrade head`
+- создает helper-команду `backend-status`
 
-### Порты backend-хоста
+### Открытые порты backend-хоста
 
-По умолчанию после `deploy_production.sh` снаружи доступны:
+По умолчанию снаружи доступны:
 
 - `22/tcp` — SSH
 - `8000/tcp` — backend API
 
-### Как запускать
-
-В корне проекта должен существовать корректный `.env`.
+### Запуск
 
 ```bash
 make backend-deploy
@@ -87,13 +74,7 @@ make backend-deploy
 make backend-deploy SSH_PORT=2222 APP_PORT=8000
 ```
 
-Если нужен запуск в текущей SSH-сессии:
-
-```bash
-make backend-deploy-direct
-```
-
-### Что проверить после запуска
+### Что проверить
 
 ```bash
 backend-status
@@ -103,11 +84,26 @@ ufw status verbose
 fail2ban-client status
 ```
 
-## 2. VPN-нода
+## 3. VPN Node
 
-### Назначение
+### Что делает `vpn-server.sh`
 
-`ops/vpn-node/vpn-server.sh` подготавливает сервер с 3X-UI/Xray и поддерживает безопасный update без разрушения существующей базы `x-ui.db`.
+`vpn-server.sh` больше не накатывает project-specific настройки панели. Его задача теперь:
+
+- поставить 3X-UI на новой ноде
+- сохранить фактические данные доступа после официального install flow
+- создать self-signed сертификат `x-ui.crt` и `x-ui.key` в `/root/cert/`
+- привязать этот сертификат к 3X-UI для доступа по `HTTPS`
+- поставить официальный `warp-cli`
+- зарегистрировать WARP и включить local proxy mode на `127.0.0.1:40000`
+- настроить `ufw`, `fail2ban`, `logrotate`, `unattended-upgrades`
+- настроить резервное копирование `x-ui.db`
+
+Что скрипт не делает:
+
+- не меняет panel port, `webBasePath`, username, password
+- не трогает subscription path в панели
+- не создает outbound/routing rules под WARP в 3X-UI
 
 ### Поддерживаемые команды
 
@@ -123,150 +119,112 @@ make vpn-version
 `install`:
 
 - только для нового сервера
-- прерывается, если видит существующую установку 3X-UI
+- прерывается, если находит существующую установку 3X-UI
 
 `update`:
 
-- делает резервную копию БД перед изменениями
+- делает backup `x-ui.db` перед изменениями
 - не переустанавливает 3X-UI
-- не трогает существующую базу и уже настроенные данные панели
+- не меняет существующие ручные настройки панели
+- сохраняет уже существующий сертификат панели, если он был установлен вручную
 
 `backup`:
 
 - сохраняет только `x-ui.db`
 
-### Что настраивает `vpn-server.sh`
-
-- обновление системы и базовых пакетов
-- установка 3X-UI на новом сервере
-- системные лимиты и network tuning
-- `TCP BBR`
-- `ufw`
-- `fail2ban`
-- `logrotate`
-- `unattended-upgrades`
-- helper `vpn-status`
-- резервное копирование `x-ui.db`
-- cron-задачу для регулярных backup-ов
-
-WARP из автоматической логики удален. Если он нужен, настраивайте его вручную через 3X-UI панель.
-
 ### Порты VPN-ноды
 
-Текущая схема firewall такая:
+При включенном firewall скрипт открывает:
 
 - `22/tcp` — SSH
-- `443/tcp` — открыт для всех
-- `65000/tcp` — панель 3X-UI, доступ с `BACKEND_IP` и `ADMIN_IP`
-- `2096/tcp` — subscription endpoint 3X-UI, доступ только с `BACKEND_IP`
+- `443/tcp` — публичный VPN traffic
+- текущий panel port 3X-UI — только для `BACKEND_IP` и `ADMIN_IP`
+- `X3UI_SUB_PORT` — только для `BACKEND_IP`
+
+По умолчанию:
+
+- panel port default: `65000`
+- subscription port hint: `2096`
+- локальный WARP proxy: `127.0.0.1:40000`
 
 Важно:
 
-- `443/udp` закрыт
-- `80/tcp` закрыт
-- при включенном firewall переменная `BACKEND_IP` обязательна
-- переменная `ADMIN_IP` необязательна, но если задана, получает доступ к панели на `65000/tcp`
+- panel port берется из реальных настроек 3X-UI, если CLI умеет их показать
+- `X3UI_PORT`, `X3UI_WEB_BASE_PATH`, `X3UI_USERNAME`, `X3UI_PASSWORD`, `X3UI_SUB_PATH` используются только для firewall и сохранения credentials, а не для автоконфигурации панели
+- если потом вручную меняете panel port или subscription port, убедитесь, что firewall и backend server record обновлены под реальные значения
 
 ### SSL / HTTPS для панели
 
-Скрипт исходит из вашей текущей эксплуатационной модели:
+Скрипт создает self-signed сертификат:
 
-- панель 3X-UI доступна по `HTTPS`
-- на VPS уже есть предустановленный self-signed SSL-сертификат
-- backend подключается к панели по `HTTPS`, но без строгой проверки сертификата
+- cert: `/root/cert/x-ui.crt`
+- key: `/root/cert/x-ui.key`
+
+Затем он прописывает эти пути в 3X-UI через CLI и перезапускает `x-ui`.
+
+Backend уже работает с self-signed сертификатами, потому что `XUIClient` использует `verify=False`.
+
+### WARP
+
+Скрипт ставит официальный пакет Cloudflare WARP и поднимает:
+
+- сервис `warp-svc`
+- регистрацию клиента
+- proxy mode
+- локальный proxy port `40000`
+
+Что все еще делается вручную в 3X-UI:
+
+- создание outbound под локальный WARP proxy
+- привязка routing rules к нужным inbound-ам
 
 ### Переменные окружения для `vpn-server.sh`
 
-Поддерживаются переопределения:
+Основные:
 
-```bash
-X3UI_PORT
-X3UI_SUB_PORT
-X3UI_WEB_BASE_PATH
-X3UI_SUB_PATH
-X3UI_USERNAME
-X3UI_PASSWORD
-BACKEND_IP
-ADMIN_IP
-SSH_PORT
-ENABLE_BBR
-ENABLE_FIREWALL
-SQLITE_BUSY_TIMEOUT_MS
-SQLITE_RETRY_ATTEMPTS
-```
+- `BACKEND_IP`
+- `ADMIN_IP`
+- `SSH_PORT`
+- `X3UI_SUB_PORT`
+- `ENABLE_BBR`
+- `ENABLE_FIREWALL`
+- `WARP_PROXY_PORT`
+- `PANEL_CERT_DAYS`
 
-Текущие дефолты:
+Дополнительные переменные для firewall и сохранения credentials:
 
-```bash
-X3UI_PORT=65000
-X3UI_SUB_PORT=2096
-X3UI_WEB_BASE_PATH=/secretpanel
-X3UI_SUB_PATH=""
-X3UI_USERNAME=admin
-X3UI_PASSWORD=""     # сгенерируется на fresh install, если не задан
-BACKEND_IP=""        # обязателен при ENABLE_FIREWALL=true
-ADMIN_IP=""          # опционален, дает доступ к панели на 65000/tcp
-SSH_PORT=22
-ENABLE_BBR=true
-ENABLE_FIREWALL=true
-SQLITE_BUSY_TIMEOUT_MS=15000
-SQLITE_RETRY_ATTEMPTS=5
-```
-
-### Пример установки новой VPN-ноды
-
-```bash
-make vpn-install BACKEND_IP=203.0.113.10 ADMIN_IP=198.51.100.25
-```
-
-Если нужен запуск без detached-режима:
-
-```bash
-make vpn-install-direct BACKEND_IP=203.0.113.10 ADMIN_IP=198.51.100.25
-```
-
-### Пример безопасного update
-
-```bash
-make vpn-update BACKEND_IP=203.0.113.10 ADMIN_IP=198.51.100.25
-```
-
-### Резервные копии
-
-Ручной backup:
-
-```bash
-make vpn-backup
-```
-
-Путь хранения:
-
-```bash
-/root/x-ui-backups
-```
+- `X3UI_PORT`
+- `X3UI_WEB_BASE_PATH`
+- `X3UI_SUB_PATH`
+- `X3UI_USERNAME`
+- `X3UI_PASSWORD`
 
 ### Что сохранить после fresh install
 
-На новой установке создается файл:
+После установки создаются:
+
+- `/root/.vpn-server-credentials` — фактический URL панели, логин, WARP proxy и пути к сертификату
+- `/root/.vpn-server-3x-ui-install.log` — сырой лог официального install flow 3X-UI
+
+### Проверка VPN-ноды
 
 ```bash
-/root/.vpn-server-credentials
+vpn-status
+systemctl status x-ui
+systemctl status warp-svc
+warp-cli --accept-tos status
+ufw status verbose
+fail2ban-client status
 ```
 
-Там лежат итоговые доступы к панели и служебная информация по конфигурации.
+## 4. Operational Notes
 
-## 3. Операционные рекомендации
-
-- Перед массовыми изменениями на VPN-ноде запускайте `backup`.
-- На backend-хосте не открывайте PostgreSQL наружу.
 - При добавлении ноды через API указывайте `use_https=true`.
-- Если нода поднималась через `vpn-server.sh`, в backend-записи сервера обычно должны совпадать:
-  - `panel_port=65000`
-  - `subscription_port=2096`
-  - `web_base_path=/secretpanel`
+- При создании server record в backend используйте реальные значения из панели или из `/root/.vpn-server-credentials`, а не старые project defaults.
+- Если вручную заменили self-signed сертификат на свой, `vpn-update` его не должен перезаписывать.
 - После изменения схемы БД не забывайте `alembic upgrade head`.
 
-## 4. Troubleshooting
+## 5. Troubleshooting
 
 Backend-хост:
 
@@ -283,12 +241,14 @@ VPN-нода:
 ```bash
 vpn-status
 journalctl -u x-ui -f
+journalctl -u warp-svc -f
 systemctl status x-ui
-ufw status verbose
-fail2ban-client status
+systemctl status warp-svc
+warp-cli --accept-tos status
 ```
 
-## 5. Связанные документы
+## 6. Связанные документы
 
-- `README.md` — обзор backend и быстрый старт
-- `docs/PIPELINE.md` — endpoint-ы, бизнес-правила и схема БД
+- `README.md` — обзор и быстрый старт
+- `docs/CONFIG_PIPELINE.md` — production pipeline новой ноды
+- `docs/API_PIPELINE.md` — API, бизнес-правила и схема БД

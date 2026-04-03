@@ -2,13 +2,13 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="vpn-server.sh"
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.4.1"
 
 # =============================================================================
 # VPN server bootstrap / update / backup
 # Safe for production:
 # - install: only on fresh server, aborts if 3X-UI DB already exists
-# - update: never reinstalls 3X-UI, never changes existing 3X-UI credentials
+# - update: never reinstalls 3X-UI, never changes existing 3X-UI panel settings
 # - backup: backup only x-ui.db
 #
 # Usage:
@@ -22,10 +22,10 @@ SCRIPT_VERSION="1.3.0"
 # ----------------------------
 X3UI_PORT="${X3UI_PORT:-65000}"
 X3UI_SUB_PORT="${X3UI_SUB_PORT:-2096}"
-X3UI_WEB_BASE_PATH="${X3UI_WEB_BASE_PATH:-/secretpanel}"
-X3UI_SUB_PATH="${X3UI_SUB_PATH:-}"
+X3UI_WEB_BASE_PATH="${X3UI_WEB_BASE_PATH:-/}"
+X3UI_SUB_PATH="${X3UI_SUB_PATH:-/sub/}"
 X3UI_USERNAME="${X3UI_USERNAME:-admin}"
-X3UI_PASSWORD="${X3UI_PASSWORD:-}"      # generated only during fresh install if empty
+X3UI_PASSWORD="${X3UI_PASSWORD:-}"
 BACKEND_IP="${BACKEND_IP:-}"
 ADMIN_IP="${ADMIN_IP:-}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -33,12 +33,18 @@ ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
+WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+PANEL_CERT_DAYS="${PANEL_CERT_DAYS:-825}"
 
 XUI_DB="/etc/x-ui/x-ui.db"
 XUI_ETC_DIR="/etc/x-ui"
 XUI_BIN_DIR="/usr/local/x-ui"
 XUI_BIN="/usr/local/x-ui/x-ui"
 XUI_SERVICE="/etc/systemd/system/x-ui.service"
+PANEL_CERT_DIR="/root/cert"
+XUI_PANEL_CERT_PATH="${XUI_PANEL_CERT_PATH:-${PANEL_CERT_DIR}/x-ui.crt}"
+XUI_PANEL_KEY_PATH="${XUI_PANEL_KEY_PATH:-${PANEL_CERT_DIR}/x-ui.key}"
+XUI_INSTALL_LOG="/root/.vpn-server-3x-ui-install.log"
 
 BACKUP_DIR="/root/x-ui-backups"
 CREDS_FILE="/root/.vpn-server-credentials"
@@ -86,22 +92,24 @@ usage() {
   cat <<EOF
 Usage:
   sudo bash $0 install   # fresh server only
-  sudo bash $0 update    # safe update, preserves x-ui DB and credentials
+  sudo bash $0 update    # safe update, preserves x-ui DB and manual panel settings
   sudo bash $0 backup    # backup only x-ui.db
   sudo bash $0 version   # show script version
 
 Environment overrides:
   X3UI_PORT=65000
   X3UI_SUB_PORT=2096
-  X3UI_WEB_BASE_PATH=/secretpanel
+  X3UI_WEB_BASE_PATH=/
   X3UI_USERNAME=admin
   X3UI_PASSWORD=...
-  X3UI_SUB_PATH=/sub-xxxx
+  X3UI_SUB_PATH=/sub/
   BACKEND_IP=1.2.3.4
   ADMIN_IP=1.2.3.5
   SSH_PORT=22
   ENABLE_BBR=true
   ENABLE_FIREWALL=true
+  WARP_PROXY_PORT=40000
+  PANEL_CERT_DAYS=825
 EOF
 }
 
@@ -128,8 +136,10 @@ validate_config() {
   validate_port "$X3UI_PORT"
   validate_port "$X3UI_SUB_PORT"
   validate_port "$SSH_PORT"
+  validate_port "$WARP_PROXY_PORT"
   [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
   [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
+  [[ "$PANEL_CERT_DAYS" =~ ^[0-9]+$ ]] || die "PANEL_CERT_DAYS must be numeric"
 
   case "$ENABLE_BBR" in
     true|false) ;;
@@ -144,6 +154,118 @@ validate_config() {
   if [[ "$ENABLE_FIREWALL" == "true" && -z "$BACKEND_IP" ]]; then
     die "BACKEND_IP must be set when ENABLE_FIREWALL=true"
   fi
+}
+
+note_panel_bootstrap_mode() {
+  log_info "3X-UI panel settings are no longer managed by this script."
+  log_info "X3UI_* values are used only for firewall and credentials output unless you change them manually."
+}
+
+strip_ansi() {
+  sed -r 's/\x1B\[[0-9;]*[[:alpha:]]//g'
+}
+
+normalize_web_base_path() {
+  local path="${1:-/}"
+  [[ -n "$path" ]] || path="/"
+  [[ "$path" == /* ]] || path="/${path}"
+  [[ "$path" == "/" ]] || path="${path%/}"
+  printf '%s' "$path"
+}
+
+extract_label_from_file() {
+  local label="$1"
+  local file="$2"
+
+  [[ -f "$file" ]] || return 0
+
+  strip_ansi < "$file" | awk -F': ' -v label="$label" '$1 == label {value=$2} END {print value}'
+}
+
+get_public_ip() {
+  curl -fsS -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
+}
+
+wait_for_xui_ready() {
+  local i
+
+  for i in {1..30}; do
+    if [[ -x "$XUI_BIN" ]] && systemctl is-active --quiet x-ui 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
+read_credential_field() {
+  local field="$1"
+  local file="$2"
+
+  [[ -f "$file" ]] || return 0
+  awk -F': ' -v field="$field" '$1 == field {value=$2} END {print value}' "$file"
+}
+
+extract_last_https_url_from_file() {
+  local file="$1"
+
+  [[ -f "$file" ]] || return 0
+  strip_ansi < "$file" | grep -Eo 'https://[^[:space:]]+' | tail -n 1 || true
+}
+
+write_credentials_file() {
+  local ip panel_url panel_path username password password_from_log password_from_creds username_from_log username_from_creds url_from_log url_from_creds
+
+  ip="$(get_public_ip)"
+  panel_path="$(normalize_web_base_path "$X3UI_WEB_BASE_PATH")"
+  panel_url="https://${ip}:${X3UI_PORT}${panel_path}"
+  username="$X3UI_USERNAME"
+  password="$X3UI_PASSWORD"
+
+  username_from_log="$(extract_label_from_file "Username" "$XUI_INSTALL_LOG" | tr -d '\r')"
+  password_from_log="$(extract_label_from_file "Password" "$XUI_INSTALL_LOG" | tr -d '\r')"
+  url_from_log="$(extract_last_https_url_from_file "$XUI_INSTALL_LOG" | tr -d '\r')"
+
+  username_from_creds="$(read_credential_field "Username" "$CREDS_FILE" | tr -d '\r')"
+  password_from_creds="$(read_credential_field "Password" "$CREDS_FILE" | tr -d '\r')"
+  url_from_creds="$(read_credential_field "Panel URL" "$CREDS_FILE" | tr -d '\r')"
+
+  [[ -n "$username_from_log" ]] && username="$username_from_log"
+  [[ -n "$password_from_log" ]] && password="$password_from_log"
+  [[ -n "$url_from_log" ]] && panel_url="$url_from_log"
+
+  if [[ -z "$username" && -n "$username_from_creds" ]]; then
+    username="$username_from_creds"
+  fi
+
+  if [[ -z "$password" && -n "$password_from_creds" && "$password_from_creds" != "not captured automatically; check ${XUI_INSTALL_LOG}" ]]; then
+    password="$password_from_creds"
+  fi
+
+  if [[ -z "$url_from_log" && -n "$url_from_creds" ]]; then
+    panel_url="$url_from_creds"
+  fi
+
+  [[ -n "$username" ]] || username="admin"
+  [[ -n "$password" ]] || password="not captured automatically; check ${XUI_INSTALL_LOG}"
+
+  cat > "$CREDS_FILE" <<EOF
+Panel URL: ${panel_url}
+Username: ${username}
+Password: ${password}
+Panel Port Hint: ${X3UI_PORT}
+Web Base Path Hint: ${panel_path}
+Subscription Port Hint: ${X3UI_SUB_PORT}
+Subscription Path Hint: ${X3UI_SUB_PATH}
+Backend IP allowed for panel/subscription: ${BACKEND_IP}
+Admin IP allowed for panel: ${ADMIN_IP:-not set}
+WARP Proxy: socks5://127.0.0.1:${WARP_PROXY_PORT}
+Panel Certificate: ${XUI_PANEL_CERT_PATH}
+Panel Private Key: ${XUI_PANEL_KEY_PATH}
+Generated: $(date)
+EOF
+  chmod 600 "$CREDS_FILE"
 }
 
 run_sqlite_with_retry() {
@@ -227,6 +349,57 @@ install_base_packages() {
   systemctl restart vnstat >/dev/null 2>&1 || true
 
   log_success "System packages updated"
+}
+
+install_warp_cli_official() {
+  section "Install official Cloudflare WARP client"
+
+  install -d -m 755 /usr/share/keyrings
+  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+    | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+
+  cat > /etc/apt/sources.list.d/cloudflare-client.list <<EOF
+deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main
+EOF
+
+  apt-get update -y
+  apt-get install -y cloudflare-warp
+
+  log_success "Official warp-cli installed"
+}
+
+configure_warp_proxy() {
+  section "Configure WARP local proxy"
+
+  command -v warp-cli >/dev/null 2>&1 || die "warp-cli not found after installation"
+
+  systemctl enable warp-svc >/dev/null 2>&1 || true
+  systemctl restart warp-svc
+  sleep 2
+
+  if ! warp-cli --accept-tos registration show >/dev/null 2>&1; then
+    if warp-cli --accept-tos registration new >/dev/null 2>&1 \
+      || warp-cli --accept-tos register >/dev/null 2>&1; then
+      log_success "WARP registration is ready"
+    else
+      log_warn "Could not explicitly register warp-cli; continuing because the client may already be registered"
+    fi
+  fi
+
+  warp-cli --accept-tos disconnect >/dev/null 2>&1 || true
+  warp-cli --accept-tos tunnel protocol set MASQUE >/dev/null 2>&1 || \
+    log_warn "Failed to force MASQUE protocol; continuing with client defaults"
+  warp-cli --accept-tos mode proxy >/dev/null 2>&1 || die "Failed to enable WARP proxy mode"
+  warp-cli --accept-tos proxy port "$WARP_PROXY_PORT" >/dev/null 2>&1 \
+    || warp-cli --accept-tos set-proxy-port "$WARP_PROXY_PORT" >/dev/null 2>&1 \
+    || die "Failed to set WARP proxy port to $WARP_PROXY_PORT"
+  warp-cli --accept-tos connect >/dev/null 2>&1 || die "Failed to connect warp-cli"
+
+  if warp-cli --accept-tos status 2>/dev/null | grep -qiE 'connected|on'; then
+    log_success "WARP proxy is active on 127.0.0.1:${WARP_PROXY_PORT}"
+  else
+    log_warn "warp-cli did not report a connected state; inspect: warp-cli --accept-tos status"
+  fi
 }
 
 # ----------------------------
@@ -337,111 +510,91 @@ enable_bbr_if_needed() {
 # ----------------------------
 fresh_install_3xui() {
   section "Install 3X-UI (fresh only)"
+  local install_script
 
   if is_xui_installed; then
     die "Existing 3X-UI detected. install mode is only for fresh servers. Use: $0 update"
   fi
 
-  bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) <<'EOF'
+  install_script="$(mktemp)"
+  curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh -o "$install_script"
+
+  bash "$install_script" <<'EOF' 2>&1 | tee "$XUI_INSTALL_LOG"
 y
 EOF
+  rm -f "$install_script"
 
   sleep 3
 
   [[ -x "$XUI_BIN" ]] || die "3X-UI binary not found after install"
+  wait_for_xui_ready || log_warn "x-ui service did not become active immediately after install"
   log_success "3X-UI installed"
 }
 
-configure_3xui_first_install_only() {
-  section "Configure 3X-UI (fresh install only)"
+setup_self_signed_panel_certificate() {
+  local mode="${1:-preserve}"
+  local host_name public_ip cert_cn openssl_cfg
+
+  section "Self-signed HTTPS certificate for 3X-UI"
 
   [[ -x "$XUI_BIN" ]] || die "3X-UI binary not found: $XUI_BIN"
 
-  if [[ -z "$X3UI_PASSWORD" ]]; then
-    X3UI_PASSWORD="$(openssl rand -hex 16)"
+  if [[ "$mode" != "force" && -f "$XUI_PANEL_CERT_PATH" && -f "$XUI_PANEL_KEY_PATH" ]]; then
+    log_info "Existing panel certificate preserved: $XUI_PANEL_CERT_PATH"
+    return 0
   fi
 
-  # wait for DB/service readiness
-  local i
-  for i in {1..30}; do
-    if [[ -f "$XUI_DB" ]] && systemctl is-active --quiet x-ui; then
-      break
-    fi
-    sleep 1
-  done
+  install -d -m 700 "$PANEL_CERT_DIR"
+  host_name="$(hostname -f 2>/dev/null || hostname)"
+  public_ip="$(get_public_ip)"
+  cert_cn="${host_name:-x-ui.local}"
+  openssl_cfg="$(mktemp)"
 
-  if [[ ! -f "$XUI_DB" ]]; then
-    log_warn "x-ui database not detected yet, continuing with CLI configuration"
+  cat > "$openssl_cfg" <<EOF
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+x509_extensions = v3_req
+distinguished_name = dn
+
+[dn]
+CN = ${cert_cn}
+O = Self-Signed
+OU = x-ui
+
+[v3_req]
+subjectAltName = @alt_names
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = ${host_name:-localhost}
+IP.1 = 127.0.0.1
+EOF
+
+  if [[ -n "$public_ip" ]]; then
+    echo "IP.2 = ${public_ip}" >> "$openssl_cfg"
   fi
 
-  log_info "Applying initial 3X-UI panel settings..."
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -days "$PANEL_CERT_DAYS" \
+    -keyout "$XUI_PANEL_KEY_PATH" \
+    -out "$XUI_PANEL_CERT_PATH" \
+    -config "$openssl_cfg" >/dev/null 2>&1
+  rm -f "$openssl_cfg"
 
-  # 1. Panel port
-  if [[ -n "$X3UI_PORT" ]]; then
-    log_info "Setting panel port: $X3UI_PORT"
-    x-ui setting -port "$X3UI_PORT" 2>/dev/null || log_warn "Failed to set panel port via CLI"
-  fi
+  chmod 600 "$XUI_PANEL_KEY_PATH"
+  chmod 644 "$XUI_PANEL_CERT_PATH"
 
-  # 2. Panel web base path
-  if [[ -n "$X3UI_WEB_BASE_PATH" ]]; then
-    log_info "Setting panel web base path: $X3UI_WEB_BASE_PATH"
-    x-ui setting -webBasePath "$X3UI_WEB_BASE_PATH" 2>/dev/null || log_warn "Failed to set webBasePath via CLI"
-  fi
-
-  # 3. Panel username/password
-  log_info "Setting panel credentials"
-  x-ui setting -username "$X3UI_USERNAME" -password "$X3UI_PASSWORD" 2>/dev/null || {
-    log_warn "Combined username/password update failed, trying separately"
-    x-ui setting -username "$X3UI_USERNAME" 2>/dev/null || log_warn "Failed to set username"
-    x-ui setting -password "$X3UI_PASSWORD" 2>/dev/null || log_warn "Failed to set password"
-  }
-
-  # 4. Subscription path / URI
-  #
-  # Important:
-  # Not all 3X-UI versions expose subscription settings via CLI.
-  # We do NOT patch the SQLite DB directly here.
-  # If your version supports a CLI setting, this block will use it.
-  # Otherwise, you should apply subscription config via API after install.
-  #
-  if [[ -n "$X3UI_SUB_PATH" ]]; then
-    log_info "Attempting to set subscription path: $X3UI_SUB_PATH"
-
-    if x-ui setting --help 2>/dev/null | grep -qi "sub"; then
-      # Try common variants used by different forks/versions
-      x-ui setting -subPath "$X3UI_SUB_PATH" 2>/dev/null \
-        || x-ui setting -subURI "$X3UI_SUB_PATH" 2>/dev/null \
-        || x-ui setting -subUrl "$X3UI_SUB_PATH" 2>/dev/null \
-        || log_warn "Subscription path CLI option not supported by this 3X-UI version; configure it via API"
-    else
-      log_warn "This 3X-UI CLI does not expose subscription settings; configure subscription path via API"
-    fi
-  fi
+  "$XUI_BIN" cert -webCert "$XUI_PANEL_CERT_PATH" -webCertKey "$XUI_PANEL_KEY_PATH" >/dev/null 2>&1 \
+    || die "Failed to configure x-ui certificate paths"
 
   systemctl restart x-ui
-  sleep 2
-
-  local ip
-  ip="$(curl -s -4 ifconfig.me || hostname -I | awk '{print $1}')"
-
-  cat > "$CREDS_FILE" <<EOF
-Panel URL: https://${ip}:${X3UI_PORT}${X3UI_WEB_BASE_PATH}
-Username: ${X3UI_USERNAME}
-Password: ${X3UI_PASSWORD}
-Subscription Path: ${X3UI_SUB_PATH}
-Subscription Port: ${X3UI_SUB_PORT}
-Backend IP allowed for panel/subscription: ${BACKEND_IP}
-Admin IP allowed for panel: ${ADMIN_IP:-not set}
-Generated: $(date)
-EOF
-  chmod 600 "$CREDS_FILE"
-
-  log_success "3X-UI initial configuration applied"
-  log_warn "Credentials saved to: $CREDS_FILE"
-
-  if [[ -n "$X3UI_SUB_PATH" ]]; then
-    log_info "If subscription path was not applied by CLI, configure it through 3X-UI API after installation"
-  fi
+  wait_for_xui_ready || log_warn "x-ui service did not become active immediately after certificate update"
+  log_success "Self-signed certificate configured at ${XUI_PANEL_CERT_PATH}"
 }
 
 # ----------------------------
@@ -580,7 +733,7 @@ EOF
 create_monitoring_script() {
   section "Monitoring helper"
 
-  cat > /usr/local/bin/vpn-status <<'EOF'
+  cat > /usr/local/bin/vpn-status <<EOF
 #!/usr/bin/env bash
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -588,37 +741,44 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 echo -e "${CYAN}=== VPN SERVER STATUS ===${NC}"
 
 echo -e "\n${GREEN}System${NC}"
-echo "Uptime: $(uptime -p)"
-echo "Load:   $(awk '{print $1, $2, $3}' /proc/loadavg)"
+echo "Uptime: \$(uptime -p)"
+echo "Load:   \$(awk '{print \$1, \$2, \$3}' /proc/loadavg)"
 
 echo -e "\n${GREEN}Memory${NC}"
-free -h | awk '/^Mem:/ {printf "RAM: total=%s used=%s free=%s\n", $2, $3, $4}'
-free -h | awk '/^Swap:/ {printf "Swap: total=%s used=%s\n", $2, $3}'
+free -h | awk '/^Mem:/ {printf "RAM: total=%s used=%s free=%s\n", \$2, \$3, \$4}'
+free -h | awk '/^Swap:/ {printf "Swap: total=%s used=%s\n", \$2, \$3}'
 
 echo -e "\n${GREEN}Disk${NC}"
-df -h / | awk 'NR==2 {printf "/: total=%s used=%s (%s) free=%s\n", $2, $3, $5, $4}'
+df -h / | awk 'NR==2 {printf "/: total=%s used=%s (%s) free=%s\n", \$2, \$3, \$5, \$4}'
 
 echo -e "\n${GREEN}Connections${NC}"
-echo "ESTABLISHED: $(ss -t state established | wc -l)"
-echo "TIME-WAIT:   $(ss -t state time-wait | wc -l)"
+echo "ESTABLISHED: \$(ss -t state established | wc -l)"
+echo "TIME-WAIT:   \$(ss -t state time-wait | wc -l)"
 if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
-  echo "Conntrack:   $(cat /proc/sys/net/netfilter/nf_conntrack_count) / $(cat /proc/sys/net/netfilter/nf_conntrack_max)"
+  echo "Conntrack:   \$(cat /proc/sys/net/netfilter/nf_conntrack_count) / \$(cat /proc/sys/net/netfilter/nf_conntrack_max)"
 fi
 
 echo -e "\n${GREEN}Services${NC}"
-for svc in x-ui fail2ban ufw; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    echo -e "$svc: ${GREEN}active${NC}"
+for svc in x-ui warp-svc fail2ban ufw; do
+  if systemctl is-active --quiet "\$svc" 2>/dev/null; then
+    echo -e "\$svc: ${GREEN}active${NC}"
   else
-    echo -e "$svc: ${RED}inactive${NC}"
+    echo -e "\$svc: ${RED}inactive${NC}"
   fi
 done
 
+echo -e "\n${GREEN}WARP Proxy${NC}"
+if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '127\.0\.0\.1:${WARP_PROXY_PORT}$'; then
+  echo "listening: 127.0.0.1:${WARP_PROXY_PORT}"
+else
+  echo "not listening on 127.0.0.1:${WARP_PROXY_PORT}"
+fi
+
 echo -e "\n${GREEN}Xray${NC}"
 if pgrep -x xray >/dev/null; then
-  pid="$(pgrep -x xray | head -1)"
-  mem="$(ps -o rss= -p "$pid" | awk '{printf "%.1f MB", $1/1024}')"
-  echo "running: PID=$pid RAM=$mem FD=$(ls /proc/$pid/fd 2>/dev/null | wc -l)"
+  pid="\$(pgrep -x xray | head -1)"
+  mem="\$(ps -o rss= -p "\$pid" | awk '{printf "%.1f MB", \$1/1024}')"
+  echo "running: PID=\$pid RAM=\$mem FD=\$(ls /proc/\$pid/fd 2>/dev/null | wc -l)"
 else
   echo "not running"
 fi
@@ -721,39 +881,54 @@ EOF
 # Summaries
 # ----------------------------
 show_install_summary() {
-  local ip
-  ip="$(curl -s -4 ifconfig.me || hostname -I | awk '{print $1}')"
+  local panel_url username password
+
+  panel_url="$(read_credential_field "Panel URL" "$CREDS_FILE")"
+  username="$(read_credential_field "Username" "$CREDS_FILE")"
+  password="$(read_credential_field "Password" "$CREDS_FILE")"
+
   section "Install completed"
 
-  echo "Panel URL: https://${ip}:${X3UI_PORT}${X3UI_WEB_BASE_PATH}"
-  echo "Username:  ${X3UI_USERNAME}"
-  echo "Password:  ${X3UI_PASSWORD}"
+  echo "Panel URL: ${panel_url}"
+  echo "Username:  ${username}"
+  echo "Password:  ${password}"
   echo
   echo "Backend IP for panel/subscription: ${BACKEND_IP}"
   echo "Admin IP for panel:                ${ADMIN_IP:-not set}"
-  echo "Panel port:                        ${X3UI_PORT}/tcp (backend + admin IP)"
-  echo "Subscription port:               ${X3UI_SUB_PORT}/tcp (backend IP only)"
-  echo "VPN public ports:                443/tcp"
+  echo "Panel port hint:                   ${X3UI_PORT}/tcp (backend + admin IP)"
+  echo "Subscription port hint:            ${X3UI_SUB_PORT}/tcp (backend IP only)"
+  echo "WARP proxy:                        socks5://127.0.0.1:${WARP_PROXY_PORT}"
+  echo "Panel cert:                        ${XUI_PANEL_CERT_PATH}"
+  echo "VPN public ports:                  443/tcp"
   echo
-  echo "Credentials file: ${CREDS_FILE}"
-  echo "Backup dir:        ${BACKUP_DIR}"
-  echo "Monitoring:        vpn-status"
+  echo "Credentials file:   ${CREDS_FILE}"
+  echo "3X-UI install log:  ${XUI_INSTALL_LOG}"
+  echo "Backup dir:         ${BACKUP_DIR}"
+  echo "Monitoring:         vpn-status"
   echo
-  echo "IMPORTANT: save credentials and remove ${CREDS_FILE} after that."
+  echo "IMPORTANT: panel settings were not auto-customized. Configure panel/web path/subscription manually in 3X-UI."
 }
 
 show_update_summary() {
+  local panel_url
+
+  panel_url="$(read_credential_field "Panel URL" "$CREDS_FILE")"
+
   section "Update completed"
   echo "3X-UI DB preserved: yes"
-  echo "3X-UI credentials preserved: yes"
+  echo "3X-UI panel settings preserved: yes"
   echo "3X-UI reinstall performed: no"
+  echo "Panel URL: ${panel_url}"
+  echo "Panel port hint in firewall: ${X3UI_PORT}/tcp"
+  echo "WARP proxy: socks5://127.0.0.1:${WARP_PROXY_PORT}"
   echo "Panel access allowed from backend IP: ${BACKEND_IP}"
   echo "Panel access allowed from admin IP:   ${ADMIN_IP:-not set}"
   echo
   echo "Latest backups:"
   ls -1t "${BACKUP_DIR}"/x-ui-db-*.db 2>/dev/null | head -3 || true
   echo
-  echo "Monitoring: vpn-status"
+  echo "Credentials file: ${CREDS_FILE}"
+  echo "Monitoring:       vpn-status"
 }
 
 # ----------------------------
@@ -762,13 +937,17 @@ show_update_summary() {
 cmd_install() {
   section "Mode: INSTALL"
   is_xui_installed && die "Existing 3X-UI detected. Refusing install. Use update instead."
+  note_panel_bootstrap_mode
 
   install_base_packages
+  install_warp_cli_official
   apply_sysctl_tuning
   enable_bbr_if_needed
   fresh_install_3xui
-  configure_3xui_first_install_only
   setup_xui_systemd
+  setup_self_signed_panel_certificate force
+  configure_warp_proxy
+  write_credentials_file
   setup_firewall
   setup_fail2ban
   setup_logrotate
@@ -782,9 +961,11 @@ cmd_install() {
 cmd_update() {
   section "Mode: UPDATE"
   is_xui_installed || die "3X-UI installation not found. Use install mode on a fresh server."
+  note_panel_bootstrap_mode
 
   backup_xui_db
   install_base_packages
+  install_warp_cli_official
   apply_sysctl_tuning
   enable_bbr_if_needed
 
@@ -793,6 +974,9 @@ cmd_update() {
   # no changing x-ui username/password/port/path
 
   setup_xui_systemd
+  setup_self_signed_panel_certificate preserve
+  configure_warp_proxy
+  write_credentials_file
   setup_firewall
   setup_fail2ban
   setup_logrotate
