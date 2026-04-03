@@ -93,7 +93,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 - `X3UI_SUB_PORT`
 - `ENABLE_BBR`
 - `ENABLE_FIREWALL`
-- `WARP_PROXY_PORT`
 - `PANEL_CERT_DAYS`
 
 Дополнительные переменные для firewall и сохранения credentials:
@@ -112,8 +111,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 - сохраняет install log в `/root/.vpn-server-3x-ui-install.log`
 - создает self-signed сертификат `/root/cert/x-ui.crt` и `/root/cert/x-ui.key`
 - привязывает этот сертификат к панели
-- ставит официальный `warp-cli`
-- регистрирует WARP и включает local proxy на `127.0.0.1:40000`
 - настраивает firewall, `fail2ban`, backup `x-ui.db`
 
 ### 3.3 Что проверить сразу после install
@@ -122,8 +119,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 cat /root/.vpn-server-credentials
 vpn-status
 systemctl status x-ui
-systemctl status warp-svc
-warp-cli --accept-tos status
 ufw status verbose
 ```
 
@@ -133,7 +128,6 @@ ufw status verbose
 - текущий username
 - password, если его удалось вытащить из install log
 - subscription port hint
-- локальный WARP proxy
 - пути к сертификату
 
 ## 4. Ручная настройка панели 3X-UI
@@ -156,14 +150,27 @@ ufw status verbose
 - username/password
 - subscription port и subscription path
 
-### 4.3 Донастроить WARP в 3X-UI
+### 4.3 Установить и настроить WARP вручную
 
-Скрипт готовит только локальный proxy на стороне ОС. В самой панели нужно вручную:
+`vpn-server.sh` больше не устанавливает и не настраивает WARP.
 
-- создать outbound, который использует локальный proxy `127.0.0.1:40000`
+Если тебе нужен WARP для outbound в 3X-UI:
+
+- установи `warp-cli` вручную
+- выполни регистрацию вручную
+- включи нужный proxy mode/port вручную
+- проверь, что локальный proxy реально слушает нужный порт
+
+Только после этого имеет смысл настраивать outbound и routing rules в 3X-UI.
+
+### 4.4 Донастроить WARP в 3X-UI
+
+После ручной настройки WARP на уровне ОС в самой панели нужно вручную:
+
+- создать outbound, который использует локальный WARP proxy
 - создать routing rules для нужных inbound-ов и доменов
 
-### 4.4 Создать inbound вручную
+### 4.5 Создать inbound вручную
 
 Нужно вручную создать production inbound в 3X-UI.
 
@@ -274,13 +281,12 @@ curl -H "Authorization: Bearer ${API_TOKEN}" \
 - Inbound создан, но не включен
 - После ручного создания inbound забыли выполнить `sync`
 - Вручную поменяли panel port, но не обновили firewall
-- Ожидается, что WARP routing заработает сам по себе, хотя в 3X-UI не был создан outbound/rule
+- Ожидается, что WARP routing заработает сам по себе, хотя WARP вообще не был установлен или в 3X-UI не был создан outbound/rule
 
 ## 9. Что не требуется
 
 Сейчас не требуется:
 
-- вручную устанавливать `warp-cli`
 - вручную выпускать self-signed сертификат для 3X-UI
 - вручную открывать отдельный внешний порт для WARP proxy
 - менять firewall backend-хоста для исходящего доступа к VPN-ноде

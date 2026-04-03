@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="vpn-server.sh"
-SCRIPT_VERSION="1.4.1"
+SCRIPT_VERSION="1.4.2"
 
 # =============================================================================
 # VPN server bootstrap / update / backup
@@ -33,7 +33,6 @@ ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
-WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 PANEL_CERT_DAYS="${PANEL_CERT_DAYS:-825}"
 
 XUI_DB="/etc/x-ui/x-ui.db"
@@ -108,7 +107,6 @@ Environment overrides:
   SSH_PORT=22
   ENABLE_BBR=true
   ENABLE_FIREWALL=true
-  WARP_PROXY_PORT=40000
   PANEL_CERT_DAYS=825
 EOF
 }
@@ -136,7 +134,6 @@ validate_config() {
   validate_port "$X3UI_PORT"
   validate_port "$X3UI_SUB_PORT"
   validate_port "$SSH_PORT"
-  validate_port "$WARP_PROXY_PORT"
   [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
   [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
   [[ "$PANEL_CERT_DAYS" =~ ^[0-9]+$ ]] || die "PANEL_CERT_DAYS must be numeric"
@@ -260,7 +257,6 @@ Subscription Port Hint: ${X3UI_SUB_PORT}
 Subscription Path Hint: ${X3UI_SUB_PATH}
 Backend IP allowed for panel/subscription: ${BACKEND_IP}
 Admin IP allowed for panel: ${ADMIN_IP:-not set}
-WARP Proxy: socks5://127.0.0.1:${WARP_PROXY_PORT}
 Panel Certificate: ${XUI_PANEL_CERT_PATH}
 Panel Private Key: ${XUI_PANEL_KEY_PATH}
 Generated: $(date)
@@ -338,7 +334,7 @@ install_base_packages() {
   apt-get install -y \
     curl wget unzip tar gzip socat cron \
     htop iftop vnstat net-tools iotop nano jq \
-    fail2ban certbot ca-certificates gnupg lsb-release \
+    fail2ban certbot ca-certificates \
     ufw openssl logrotate unattended-upgrades apt-listchanges \
     sqlite3
 
@@ -350,65 +346,6 @@ install_base_packages() {
 
   log_success "System packages updated"
 }
-
-install_warp_cli_official() {
-  section "Install official Cloudflare WARP client"
-  local warp_keyring="/etc/apt/keyrings/cloudflare-warp-archive-keyring.asc"
-  local expected_key_id="6E2DD2174FA1C3BA"
-
-  install -d -m 755 /etc/apt/keyrings
-  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg -o "$warp_keyring"
-  chmod 644 "$warp_keyring"
-
-  if ! gpg --show-keys --with-colons --keyid-format long "$warp_keyring" 2>/dev/null \
-    | grep -q "pub:.*:${expected_key_id}:"; then
-    die "Cloudflare WARP repo key fingerprint mismatch; expected key id ${expected_key_id}"
-  fi
-
-  cat > /etc/apt/sources.list.d/cloudflare-client.list <<EOF
-deb [signed-by=${warp_keyring}] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main
-EOF
-
-  apt-get update -y
-  apt-get install -y cloudflare-warp
-
-  log_success "Official warp-cli installed"
-}
-
-configure_warp_proxy() {
-  section "Configure WARP local proxy"
-
-  command -v warp-cli >/dev/null 2>&1 || die "warp-cli not found after installation"
-
-  systemctl enable warp-svc >/dev/null 2>&1 || true
-  systemctl restart warp-svc
-  sleep 2
-
-  if ! warp-cli --accept-tos registration show >/dev/null 2>&1; then
-    if warp-cli --accept-tos registration new >/dev/null 2>&1 \
-      || warp-cli --accept-tos register >/dev/null 2>&1; then
-      log_success "WARP registration is ready"
-    else
-      log_warn "Could not explicitly register warp-cli; continuing because the client may already be registered"
-    fi
-  fi
-
-  warp-cli --accept-tos disconnect >/dev/null 2>&1 || true
-  warp-cli --accept-tos tunnel protocol set MASQUE >/dev/null 2>&1 || \
-    log_warn "Failed to force MASQUE protocol; continuing with client defaults"
-  warp-cli --accept-tos mode proxy >/dev/null 2>&1 || die "Failed to enable WARP proxy mode"
-  warp-cli --accept-tos proxy port "$WARP_PROXY_PORT" >/dev/null 2>&1 \
-    || warp-cli --accept-tos set-proxy-port "$WARP_PROXY_PORT" >/dev/null 2>&1 \
-    || die "Failed to set WARP proxy port to $WARP_PROXY_PORT"
-  warp-cli --accept-tos connect >/dev/null 2>&1 || die "Failed to connect warp-cli"
-
-  if warp-cli --accept-tos status 2>/dev/null | grep -qiE 'connected|on'; then
-    log_success "WARP proxy is active on 127.0.0.1:${WARP_PROXY_PORT}"
-  else
-    log_warn "warp-cli did not report a connected state; inspect: warp-cli --accept-tos status"
-  fi
-}
-
 # ----------------------------
 # System tuning
 # ----------------------------
@@ -766,20 +703,13 @@ if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
 fi
 
 echo -e "\n${GREEN}Services${NC}"
-for svc in x-ui warp-svc fail2ban ufw; do
+for svc in x-ui fail2ban ufw; do
   if systemctl is-active --quiet "\$svc" 2>/dev/null; then
     echo -e "\$svc: ${GREEN}active${NC}"
   else
     echo -e "\$svc: ${RED}inactive${NC}"
   fi
 done
-
-echo -e "\n${GREEN}WARP Proxy${NC}"
-if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '127\.0\.0\.1:${WARP_PROXY_PORT}$'; then
-  echo "listening: 127.0.0.1:${WARP_PROXY_PORT}"
-else
-  echo "not listening on 127.0.0.1:${WARP_PROXY_PORT}"
-fi
 
 echo -e "\n${GREEN}Xray${NC}"
 if pgrep -x xray >/dev/null; then
@@ -904,7 +834,6 @@ show_install_summary() {
   echo "Admin IP for panel:                ${ADMIN_IP:-not set}"
   echo "Panel port hint:                   ${X3UI_PORT}/tcp (backend + admin IP)"
   echo "Subscription port hint:            ${X3UI_SUB_PORT}/tcp (backend IP only)"
-  echo "WARP proxy:                        socks5://127.0.0.1:${WARP_PROXY_PORT}"
   echo "Panel cert:                        ${XUI_PANEL_CERT_PATH}"
   echo "VPN public ports:                  443/tcp"
   echo
@@ -927,7 +856,6 @@ show_update_summary() {
   echo "3X-UI reinstall performed: no"
   echo "Panel URL: ${panel_url}"
   echo "Panel port hint in firewall: ${X3UI_PORT}/tcp"
-  echo "WARP proxy: socks5://127.0.0.1:${WARP_PROXY_PORT}"
   echo "Panel access allowed from backend IP: ${BACKEND_IP}"
   echo "Panel access allowed from admin IP:   ${ADMIN_IP:-not set}"
   echo
@@ -947,13 +875,11 @@ cmd_install() {
   note_panel_bootstrap_mode
 
   install_base_packages
-  install_warp_cli_official
   apply_sysctl_tuning
   enable_bbr_if_needed
   fresh_install_3xui
   setup_xui_systemd
   setup_self_signed_panel_certificate force
-  configure_warp_proxy
   write_credentials_file
   setup_firewall
   setup_fail2ban
@@ -972,7 +898,6 @@ cmd_update() {
 
   backup_xui_db
   install_base_packages
-  install_warp_cli_official
   apply_sysctl_tuning
   enable_bbr_if_needed
 
@@ -982,7 +907,6 @@ cmd_update() {
 
   setup_xui_systemd
   setup_self_signed_panel_certificate preserve
-  configure_warp_proxy
   write_credentials_file
   setup_firewall
   setup_fail2ban
