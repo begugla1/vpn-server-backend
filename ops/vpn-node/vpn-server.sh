@@ -353,13 +353,18 @@ install_base_packages() {
 
 install_warp_cli_official() {
   section "Install official Cloudflare WARP client"
+  local warp_key_tmp="/tmp/cloudflare-warp-pubkey.gpg"
+  local warp_keyring="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
 
   install -d -m 755 /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
-    | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg -o "$warp_key_tmp"
+  rm -f "$warp_keyring"
+  gpg --dearmor --yes --output "$warp_keyring" "$warp_key_tmp"
+  chmod 644 "$warp_keyring"
+  rm -f "$warp_key_tmp"
 
   cat > /etc/apt/sources.list.d/cloudflare-client.list <<EOF
-deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main
+deb [signed-by=${warp_keyring}] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main
 EOF
 
   apt-get update -y
