@@ -353,15 +353,17 @@ install_base_packages() {
 
 install_warp_cli_official() {
   section "Install official Cloudflare WARP client"
-  local warp_key_tmp="/tmp/cloudflare-warp-pubkey.gpg"
-  local warp_keyring="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
+  local warp_keyring="/etc/apt/keyrings/cloudflare-warp-archive-keyring.asc"
+  local expected_key_id="6E2DD2174FA1C3BA"
 
-  install -d -m 755 /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg -o "$warp_key_tmp"
-  rm -f "$warp_keyring"
-  gpg --dearmor --yes --output "$warp_keyring" "$warp_key_tmp"
+  install -d -m 755 /etc/apt/keyrings
+  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg -o "$warp_keyring"
   chmod 644 "$warp_keyring"
-  rm -f "$warp_key_tmp"
+
+  if ! gpg --show-keys --with-colons --keyid-format long "$warp_keyring" 2>/dev/null \
+    | grep -q "pub:.*:${expected_key_id}:"; then
+    die "Cloudflare WARP repo key fingerprint mismatch; expected key id ${expected_key_id}"
+  fi
 
   cat > /etc/apt/sources.list.d/cloudflare-client.list <<EOF
 deb [signed-by=${warp_keyring}] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main
