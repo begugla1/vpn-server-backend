@@ -5,6 +5,7 @@
 - поднять backend-хост
 - поднять новую VPN-ноду
 - вручную довести панель 3X-UI до нужной конфигурации
+- вручную поднять WARP proxy на ноде
 - зарегистрировать сервер в backend
 - синхронизировать inbound-ы
 
@@ -93,7 +94,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 - `X3UI_SUB_PORT`
 - `ENABLE_BBR`
 - `ENABLE_FIREWALL`
-- `WARP_PROXY_PORT`
 - `PANEL_CERT_DAYS`
 
 Дополнительные переменные для firewall и сохранения credentials:
@@ -112,15 +112,7 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 - сохраняет install log в `/root/.vpn-server-3x-ui-install.log`
 - создает self-signed сертификат `/root/cert/x-ui.crt` и `/root/cert/x-ui.key`
 - привязывает этот сертификат к панели
-- скачивает `menu.sh` из `fscarmen/warp`
-- пытается установить WARP и поднять proxy на `127.0.0.1:40000`
 - настраивает firewall, `fail2ban`, backup `x-ui.db`
-
-Важно:
-
-- WARP шаг работает в best-effort режиме
-- если клиент уже установлен, пайплайн не падает и переходит к `warp-cli --accept-tos connect`
-- если WARP не поднялся, install/update все равно продолжается
 
 ### 3.3 Что проверить сразу после install
 
@@ -128,9 +120,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 cat /root/.vpn-server-credentials
 vpn-status
 systemctl status x-ui
-systemctl status warp-svc
-warp-cli --accept-tos status
-curl -x socks5h://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep "warp="
 ufw status verbose
 ```
 
@@ -140,7 +129,6 @@ ufw status verbose
 - текущий username
 - password, если его удалось вытащить из install log
 - subscription port hint
-- локальный WARP proxy
 - пути к сертификату
 
 ## 4. Ручная настройка панели 3X-UI
@@ -163,9 +151,9 @@ ufw status verbose
 - username/password
 - subscription port и subscription path
 
-### 4.3 Что именно делает WARP step
+### 4.3 Поднять WARP вручную на ОС
 
-Сейчас `vpn-server.sh` пытается выполнить такой pipeline:
+После bootstrap ноды выполните WARP pipeline вручную:
 
 ```bash
 wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh
@@ -174,10 +162,14 @@ warp-cli --accept-tos connect
 curl -x socks5h://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep "warp="
 ```
 
-Если какой-то из этих шагов не сработал:
+Что делает этот сценарий:
 
-- bootstrap ноды все равно продолжается
-- WARP нужно проверить и при необходимости довести вручную
+- скачивает `menu.sh`
+- запускает установку клиента через `bash menu.sh c`
+- поднимает локальный SOCKS5 proxy на `127.0.0.1:40000`
+- проверяет, что Cloudflare видит `warp=`
+
+Если клиент уже установлен, не нужно заново прогонять весь bootstrap ноды: достаточно вручную довести WARP и убедиться, что proxy реально отвечает на `127.0.0.1:40000`.
 
 ### 4.4 Донастроить WARP в 3X-UI
 
@@ -297,7 +289,7 @@ curl -H "Authorization: Bearer ${API_TOKEN}" \
 - Inbound создан, но не включен
 - После ручного создания inbound забыли выполнить `sync`
 - Вручную поменяли panel port, но не обновили firewall
-- Ожидается, что WARP routing заработает сам по себе, хотя WARP proxy не поднялся или в 3X-UI не был создан outbound/rule
+- Ожидается, что WARP routing заработает сам по себе, хотя WARP proxy не поднялся на `127.0.0.1:40000` или в 3X-UI не был создан outbound/rule
 
 ## 9. Что не требуется
 

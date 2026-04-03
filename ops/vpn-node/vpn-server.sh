@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="vpn-server.sh"
-SCRIPT_VERSION="1.4.3"
+SCRIPT_VERSION="1.4.4"
 
 # =============================================================================
 # VPN server bootstrap / update / backup
@@ -33,7 +33,6 @@ ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
-WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 PANEL_CERT_DAYS="${PANEL_CERT_DAYS:-825}"
 
 XUI_DB="/etc/x-ui/x-ui.db"
@@ -45,7 +44,6 @@ PANEL_CERT_DIR="/root/cert"
 XUI_PANEL_CERT_PATH="${XUI_PANEL_CERT_PATH:-${PANEL_CERT_DIR}/x-ui.crt}"
 XUI_PANEL_KEY_PATH="${XUI_PANEL_KEY_PATH:-${PANEL_CERT_DIR}/x-ui.key}"
 XUI_INSTALL_LOG="/root/.vpn-server-3x-ui-install.log"
-WARP_MENU_SCRIPT="/root/menu.sh"
 
 BACKUP_DIR="/root/x-ui-backups"
 CREDS_FILE="/root/.vpn-server-credentials"
@@ -109,7 +107,6 @@ Environment overrides:
   SSH_PORT=22
   ENABLE_BBR=true
   ENABLE_FIREWALL=true
-  WARP_PROXY_PORT=40000
   PANEL_CERT_DAYS=825
 EOF
 }
@@ -137,7 +134,6 @@ validate_config() {
   validate_port "$X3UI_PORT"
   validate_port "$X3UI_SUB_PORT"
   validate_port "$SSH_PORT"
-  validate_port "$WARP_PROXY_PORT"
   [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
   [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
   [[ "$PANEL_CERT_DAYS" =~ ^[0-9]+$ ]] || die "PANEL_CERT_DAYS must be numeric"
@@ -261,7 +257,6 @@ Subscription Port Hint: ${X3UI_SUB_PORT}
 Subscription Path Hint: ${X3UI_SUB_PATH}
 Backend IP allowed for panel/subscription: ${BACKEND_IP}
 Admin IP allowed for panel: ${ADMIN_IP:-not set}
-WARP Proxy: socks5h://127.0.0.1:${WARP_PROXY_PORT}
 Panel Certificate: ${XUI_PANEL_CERT_PATH}
 Panel Private Key: ${XUI_PANEL_KEY_PATH}
 Generated: $(date)
@@ -350,43 +345,6 @@ install_base_packages() {
   systemctl restart vnstat >/dev/null 2>&1 || true
 
   log_success "System packages updated"
-}
-
-configure_warp_proxy_best_effort() {
-  section "WARP via fscarmen menu.sh"
-  local trace_output=""
-
-  if wget -N -O "$WARP_MENU_SCRIPT" https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh >/dev/null 2>&1; then
-    chmod +x "$WARP_MENU_SCRIPT" || true
-    log_success "Downloaded WARP installer script"
-  else
-    log_warn "Could not download menu.sh; continuing without blocking the pipeline"
-  fi
-
-  if [[ -f "$WARP_MENU_SCRIPT" ]]; then
-    if printf "1\n1\n%s\n" "$WARP_PROXY_PORT" | bash "$WARP_MENU_SCRIPT" c >/dev/null 2>&1; then
-      log_success "WARP installation/configuration step finished"
-    else
-      log_warn "menu.sh returned a non-zero exit code; continuing and trying to start warp-cli anyway"
-    fi
-  fi
-
-  if command -v warp-cli >/dev/null 2>&1; then
-    if warp-cli --accept-tos connect >/dev/null 2>&1; then
-      log_success "warp-cli connect executed"
-    else
-      log_warn "warp-cli connect failed; continuing"
-    fi
-
-    trace_output="$(curl -fsS -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep 'warp=' || true)"
-    if [[ -n "$trace_output" ]]; then
-      log_success "WARP trace check: ${trace_output}"
-    else
-      log_warn "WARP trace check did not return warp=... via socks5h://127.0.0.1:${WARP_PROXY_PORT}"
-    fi
-  else
-    log_warn "warp-cli is not available after menu.sh step; continuing without failing the pipeline"
-  fi
 }
 # ----------------------------
 # System tuning
@@ -745,20 +703,13 @@ if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
 fi
 
 echo -e "\n${GREEN}Services${NC}"
-for svc in x-ui warp-svc fail2ban ufw; do
+for svc in x-ui fail2ban ufw; do
   if systemctl is-active --quiet "\$svc" 2>/dev/null; then
     echo -e "\$svc: ${GREEN}active${NC}"
   else
     echo -e "\$svc: ${RED}inactive${NC}"
   fi
 done
-
-echo -e "\n${GREEN}WARP Proxy${NC}"
-if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '127\.0\.0\.1:${WARP_PROXY_PORT}$'; then
-  echo "listening: 127.0.0.1:${WARP_PROXY_PORT}"
-else
-  echo "not listening on 127.0.0.1:${WARP_PROXY_PORT}"
-fi
 
 echo -e "\n${GREEN}Xray${NC}"
 if pgrep -x xray >/dev/null; then
@@ -883,7 +834,6 @@ show_install_summary() {
   echo "Admin IP for panel:                ${ADMIN_IP:-not set}"
   echo "Panel port hint:                   ${X3UI_PORT}/tcp (backend + admin IP)"
   echo "Subscription port hint:            ${X3UI_SUB_PORT}/tcp (backend IP only)"
-  echo "WARP proxy:                        socks5h://127.0.0.1:${WARP_PROXY_PORT}"
   echo "Panel cert:                        ${XUI_PANEL_CERT_PATH}"
   echo "VPN public ports:                  443/tcp"
   echo
@@ -906,7 +856,6 @@ show_update_summary() {
   echo "3X-UI reinstall performed: no"
   echo "Panel URL: ${panel_url}"
   echo "Panel port hint in firewall: ${X3UI_PORT}/tcp"
-  echo "WARP proxy: socks5h://127.0.0.1:${WARP_PROXY_PORT}"
   echo "Panel access allowed from backend IP: ${BACKEND_IP}"
   echo "Panel access allowed from admin IP:   ${ADMIN_IP:-not set}"
   echo
@@ -931,7 +880,6 @@ cmd_install() {
   fresh_install_3xui
   setup_xui_systemd
   setup_self_signed_panel_certificate force
-  configure_warp_proxy_best_effort
   write_credentials_file
   setup_firewall
   setup_fail2ban
@@ -959,7 +907,6 @@ cmd_update() {
 
   setup_xui_systemd
   setup_self_signed_panel_certificate preserve
-  configure_warp_proxy_best_effort
   write_credentials_file
   setup_firewall
   setup_fail2ban
