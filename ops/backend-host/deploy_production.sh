@@ -200,6 +200,8 @@ configure_ufw() {
     ufw limit "${SSH_PORT}/tcp"
     ufw allow "${APP_PORT}/tcp"
     ufw --force enable >/dev/null 2>&1
+    ufw logging off
+    ufw reload
 }
 
 setup_fail2ban() {
