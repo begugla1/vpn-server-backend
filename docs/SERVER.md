@@ -3,7 +3,7 @@
 Этот файл описывает серверные скрипты проекта:
 
 - `ops/backend-host/deploy_production.sh` — подготовка backend-хоста
-- `ops/vpn-node/vpn-server.sh` — подготовка VPN-ноды с 3X-UI и self-signed HTTPS для панели
+- `ops/vpn-node/vpn-server.sh` — минимальная подготовка VPN-ноды с 3X-UI
 - `ops/run-safe.sh` — detached-запуск ops-команд, который переживает разрыв SSH
 
 Скрипты рассчитаны на Debian/Ubuntu и допускают повторный безопасный запуск.
@@ -92,15 +92,14 @@ fail2ban-client status
 
 - поставить 3X-UI на новой ноде
 - сохранить фактические данные доступа после официального install flow
-- создать self-signed сертификат `x-ui.crt` и `x-ui.key` в `/root/cert/`
-- привязать этот сертификат к 3X-UI для доступа по `HTTPS`
-- настроить `ufw`, `fail2ban`, `logrotate`, `unattended-upgrades`
-- настроить резервное копирование `x-ui.db`
+- после завершения install flow больше не трогать `x-ui`
+- настроить только базовый `ufw` и `fail2ban`
 
 Что скрипт не делает:
 
 - не меняет panel port, `webBasePath`, username, password
 - не трогает subscription path в панели
+- не выпускает и не привязывает TLS-сертификат
 - не ставит и не запускает WARP
 
 ### Поддерживаемые команды
@@ -121,10 +120,9 @@ make vpn-version
 
 `update`:
 
-- делает backup `x-ui.db` перед изменениями
 - не переустанавливает 3X-UI
 - не меняет существующие ручные настройки панели
-- сохраняет уже существующий сертификат панели, если он был установлен вручную
+- не трогает существующий сертификат панели
 
 `backup`:
 
@@ -135,9 +133,9 @@ make vpn-version
 При включенном firewall скрипт открывает:
 
 - `22/tcp` — SSH
+- `80/tcp` — ACME / HTTP validation
 - `443/tcp` — публичный VPN traffic
-- текущий panel port 3X-UI — только для `BACKEND_IP` и `ADMIN_IP`
-- `X3UI_SUB_PORT` — только для `BACKEND_IP`
+- текущий panel port 3X-UI — открыт для всех
 
 По умолчанию:
 
@@ -148,18 +146,16 @@ make vpn-version
 
 - panel port для firewall и credentials берется из `X3UI_PORT`
 - `X3UI_PORT`, `X3UI_WEB_BASE_PATH`, `X3UI_USERNAME`, `X3UI_PASSWORD`, `X3UI_SUB_PATH` используются только для firewall и сохранения credentials, а не для автоконфигурации панели
+- script intentionally leaves TLS certificate and subscription port opening to you
 - если потом вручную меняете panel port или subscription port, убедитесь, что firewall и backend server record обновлены под реальные значения
 
 ### SSL / HTTPS для панели
 
-Скрипт создает self-signed сертификат:
+Скрипт сам сертификаты больше не выпускает и не прописывает.
 
-- cert: `/root/cert/x-ui.crt`
-- key: `/root/cert/x-ui.key`
+Порт `80/tcp` открывается специально для последующего получения TLS-сертификата через `Let's Encrypt` или другой ACME flow.
 
-Затем он прописывает эти пути в 3X-UI через CLI и перезапускает `x-ui`.
-
-Backend уже работает с self-signed сертификатами, потому что `XUIClient` использует `verify=False`.
+Backend по-прежнему работает с self-signed и другими нестандартными сертификатами, потому что `XUIClient` использует `verify=False`.
 
 ### WARP
 
@@ -179,7 +175,6 @@ WARP намеренно вынесен из `vpn-server.sh` и ставится 
 - `X3UI_SUB_PORT`
 - `ENABLE_BBR`
 - `ENABLE_FIREWALL`
-- `PANEL_CERT_DAYS`
 
 Дополнительные переменные для firewall и сохранения credentials:
 
@@ -193,13 +188,12 @@ WARP намеренно вынесен из `vpn-server.sh` и ставится 
 
 После установки создаются:
 
-- `/root/.vpn-server-credentials` — фактический URL панели, логин, port/path hints и пути к сертификату
+- `/root/.vpn-server-credentials` — URL панели из install flow, логин и port/path hints
 - `/root/.vpn-server-3x-ui-install.log` — сырой лог официального install flow 3X-UI
 
 ### Проверка VPN-ноды
 
 ```bash
-vpn-status
 systemctl status x-ui
 ufw status verbose
 fail2ban-client status
@@ -209,7 +203,7 @@ fail2ban-client status
 
 - При добавлении ноды через API указывайте `use_https=true`.
 - При создании server record в backend используйте реальные значения из панели или из `/root/.vpn-server-credentials`, а не старые project defaults.
-- Если вручную заменили self-signed сертификат на свой, `vpn-update` его не должен перезаписывать.
+- `vpn-update` не должен трогать сертификат панели, если вы настроили его вручную.
 - После изменения схемы БД не забывайте `alembic upgrade head`.
 
 ## 5. Troubleshooting
@@ -227,7 +221,6 @@ fail2ban-client status
 VPN-нода:
 
 ```bash
-vpn-status
 journalctl -u x-ui -f
 systemctl status x-ui
 ```

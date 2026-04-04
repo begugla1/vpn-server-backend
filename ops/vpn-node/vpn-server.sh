@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="vpn-server.sh"
-SCRIPT_VERSION="1.4.4"
+SCRIPT_VERSION="1.5.0"
 
 # =============================================================================
 # VPN server bootstrap / update / backup
@@ -33,16 +33,9 @@ ENABLE_BBR="${ENABLE_BBR:-true}"
 ENABLE_FIREWALL="${ENABLE_FIREWALL:-true}"
 SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS:-15000}"
 SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS:-5}"
-PANEL_CERT_DAYS="${PANEL_CERT_DAYS:-825}"
 
 XUI_DB="/etc/x-ui/x-ui.db"
-XUI_ETC_DIR="/etc/x-ui"
-XUI_BIN_DIR="/usr/local/x-ui"
 XUI_BIN="/usr/local/x-ui/x-ui"
-XUI_SERVICE="/etc/systemd/system/x-ui.service"
-PANEL_CERT_DIR="/root/cert"
-XUI_PANEL_CERT_PATH="${XUI_PANEL_CERT_PATH:-${PANEL_CERT_DIR}/x-ui.crt}"
-XUI_PANEL_KEY_PATH="${XUI_PANEL_KEY_PATH:-${PANEL_CERT_DIR}/x-ui.key}"
 XUI_INSTALL_LOG="/root/.vpn-server-3x-ui-install.log"
 
 BACKUP_DIR="/root/x-ui-backups"
@@ -107,7 +100,6 @@ Environment overrides:
   SSH_PORT=22
   ENABLE_BBR=true
   ENABLE_FIREWALL=true
-  PANEL_CERT_DAYS=825
 EOF
 }
 
@@ -136,7 +128,6 @@ validate_config() {
   validate_port "$SSH_PORT"
   [[ "$SQLITE_BUSY_TIMEOUT_MS" =~ ^[0-9]+$ ]] || die "SQLITE_BUSY_TIMEOUT_MS must be numeric"
   [[ "$SQLITE_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || die "SQLITE_RETRY_ATTEMPTS must be numeric"
-  [[ "$PANEL_CERT_DAYS" =~ ^[0-9]+$ ]] || die "PANEL_CERT_DAYS must be numeric"
 
   case "$ENABLE_BBR" in
     true|false) ;;
@@ -147,14 +138,11 @@ validate_config() {
     true|false) ;;
     *) die "ENABLE_FIREWALL must be true or false" ;;
   esac
-
-  if [[ "$ENABLE_FIREWALL" == "true" && -z "$BACKEND_IP" ]]; then
-    die "BACKEND_IP must be set when ENABLE_FIREWALL=true"
-  fi
 }
 
 note_panel_bootstrap_mode() {
   log_info "3X-UI panel settings are no longer managed by this script."
+  log_info "After the official installer finishes, this script does not touch x-ui again."
   log_info "X3UI_* values are used only for firewall and credentials output unless you change them manually."
 }
 
@@ -181,19 +169,6 @@ extract_label_from_file() {
 
 get_public_ip() {
   curl -fsS -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
-}
-
-wait_for_xui_ready() {
-  local i
-
-  for i in {1..30}; do
-    if [[ -x "$XUI_BIN" ]] && systemctl is-active --quiet x-ui 2>/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-
-  return 1
 }
 
 read_credential_field() {
@@ -255,10 +230,8 @@ Panel Port Hint: ${X3UI_PORT}
 Web Base Path Hint: ${panel_path}
 Subscription Port Hint: ${X3UI_SUB_PORT}
 Subscription Path Hint: ${X3UI_SUB_PATH}
-Backend IP allowed for panel/subscription: ${BACKEND_IP}
-Admin IP allowed for panel: ${ADMIN_IP:-not set}
-Panel Certificate: ${XUI_PANEL_CERT_PATH}
-Panel Private Key: ${XUI_PANEL_KEY_PATH}
+Backend IP Hint: ${BACKEND_IP:-not set}
+Admin IP Hint: ${ADMIN_IP:-not set}
 Generated: $(date)
 EOF
   chmod 600 "$CREDS_FILE"
@@ -334,9 +307,7 @@ install_base_packages() {
   apt-get install -y \
     curl wget unzip tar gzip socat cron \
     htop iftop vnstat net-tools iotop nano jq \
-    fail2ban certbot ca-certificates \
-    ufw openssl logrotate unattended-upgrades apt-listchanges \
-    sqlite3
+    fail2ban certbot ca-certificates ufw sqlite3
 
   apt-get autoremove -y
   apt-get autoclean -y
@@ -468,130 +439,8 @@ y
 EOF
   rm -f "$install_script"
 
-  sleep 3
-
   [[ -x "$XUI_BIN" ]] || die "3X-UI binary not found after install"
-  wait_for_xui_ready || log_warn "x-ui service did not become active immediately after install"
   log_success "3X-UI installed"
-}
-
-setup_self_signed_panel_certificate() {
-  local mode="${1:-preserve}"
-  local host_name public_ip cert_cn openssl_cfg
-
-  section "Self-signed HTTPS certificate for 3X-UI"
-
-  [[ -x "$XUI_BIN" ]] || die "3X-UI binary not found: $XUI_BIN"
-
-  if [[ "$mode" != "force" && -f "$XUI_PANEL_CERT_PATH" && -f "$XUI_PANEL_KEY_PATH" ]]; then
-    log_info "Existing panel certificate preserved: $XUI_PANEL_CERT_PATH"
-    return 0
-  fi
-
-  install -d -m 700 "$PANEL_CERT_DIR"
-  host_name="$(hostname -f 2>/dev/null || hostname)"
-  public_ip="$(get_public_ip)"
-  cert_cn="${host_name:-x-ui.local}"
-  openssl_cfg="$(mktemp)"
-
-  cat > "$openssl_cfg" <<EOF
-[req]
-default_bits = 2048
-prompt = no
-default_md = sha256
-x509_extensions = v3_req
-distinguished_name = dn
-
-[dn]
-CN = ${cert_cn}
-O = Self-Signed
-OU = x-ui
-
-[v3_req]
-subjectAltName = @alt_names
-basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-
-[alt_names]
-DNS.1 = localhost
-DNS.2 = ${host_name:-localhost}
-IP.1 = 127.0.0.1
-EOF
-
-  if [[ -n "$public_ip" ]]; then
-    echo "IP.2 = ${public_ip}" >> "$openssl_cfg"
-  fi
-
-  openssl req -x509 -nodes -newkey rsa:2048 \
-    -days "$PANEL_CERT_DAYS" \
-    -keyout "$XUI_PANEL_KEY_PATH" \
-    -out "$XUI_PANEL_CERT_PATH" \
-    -config "$openssl_cfg" >/dev/null 2>&1
-  rm -f "$openssl_cfg"
-
-  chmod 600 "$XUI_PANEL_KEY_PATH"
-  chmod 644 "$XUI_PANEL_CERT_PATH"
-
-  "$XUI_BIN" cert -webCert "$XUI_PANEL_CERT_PATH" -webCertKey "$XUI_PANEL_KEY_PATH" >/dev/null 2>&1 \
-    || die "Failed to configure x-ui certificate paths"
-
-  systemctl restart x-ui
-  wait_for_xui_ready || log_warn "x-ui service did not become active immediately after certificate update"
-  log_success "Self-signed certificate configured at ${XUI_PANEL_CERT_PATH}"
-}
-
-# ----------------------------
-# systemd service
-# ----------------------------
-setup_xui_systemd() {
-  section "Systemd service"
-
-  [[ -x "$XUI_BIN" ]] || {
-    log_warn "3X-UI binary not found, skip systemd setup"
-    return 0
-  }
-
-  cat > "$XUI_SERVICE" <<'EOF'
-[Unit]
-Description=3X-UI Service
-Documentation=https://github.com/MHSanaei/3x-ui
-After=network.target network-online.target nss-lookup.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/usr/local/x-ui/
-ExecStart=/usr/local/x-ui/x-ui
-Restart=always
-RestartSec=5
-StartLimitBurst=10
-StartLimitIntervalSec=60
-LimitNOFILE=1048576
-LimitNPROC=65535
-LimitCORE=infinity
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=x-ui
-TimeoutStopSec=30
-KillMode=mixed
-KillSignal=SIGTERM
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable x-ui >/dev/null 2>&1 || true
-  systemctl restart x-ui || true
-
-  if systemctl is-active --quiet x-ui; then
-    log_success "x-ui service active"
-  else
-    log_warn "x-ui service is not active; inspect: journalctl -u x-ui -f"
-  fi
 }
 
 # ----------------------------
@@ -610,12 +459,9 @@ setup_firewall() {
   ufw default allow outgoing
 
   ufw limit "${SSH_PORT}/tcp" comment 'SSH'
-  ufw allow from "${BACKEND_IP}" to any port "${X3UI_PORT}" proto tcp comment '3X-UI Panel from backend'
-  if [[ -n "${ADMIN_IP}" && "${ADMIN_IP}" != "${BACKEND_IP}" ]]; then
-    ufw allow from "${ADMIN_IP}" to any port "${X3UI_PORT}" proto tcp comment '3X-UI Panel from admin'
-  fi
-  ufw allow from "${BACKEND_IP}" to any port "${X3UI_SUB_PORT}" proto tcp comment '3X-UI Subscription from backend'
+  ufw allow 80/tcp comment 'HTTP/ACME'
   ufw allow 443/tcp comment 'HTTPS/VLESS/Trojan'
+  ufw allow "${X3UI_PORT}/tcp" comment '3X-UI Panel'
 
   ufw --force enable >/dev/null 2>&1
   log_success "Firewall applied"
@@ -644,176 +490,6 @@ EOF
   log_success "Fail2Ban configured"
 }
 
-setup_logrotate() {
-  section "Log rotation"
-
-  cat > /etc/logrotate.d/x-ui <<'EOF'
-/var/log/x-ui/*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 0640 root root
-}
-EOF
-
-  mkdir -p /etc/systemd/journald.conf.d
-  cat > /etc/systemd/journald.conf.d/size.conf <<'EOF'
-[Journal]
-SystemMaxUse=500M
-SystemMaxFileSize=50M
-MaxRetentionSec=7day
-EOF
-
-  systemctl restart systemd-journald
-  log_success "Log rotation configured"
-}
-
-# ----------------------------
-# Monitoring helper
-# ----------------------------
-create_monitoring_script() {
-  section "Monitoring helper"
-
-  cat > /usr/local/bin/vpn-status <<EOF
-#!/usr/bin/env bash
-set -u
-GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
-
-echo -e "${CYAN}=== VPN SERVER STATUS ===${NC}"
-
-echo -e "\n${GREEN}System${NC}"
-echo "Uptime: \$(uptime -p)"
-echo "Load:   \$(awk '{print \$1, \$2, \$3}' /proc/loadavg)"
-
-echo -e "\n${GREEN}Memory${NC}"
-free -h | awk '/^Mem:/ {printf "RAM: total=%s used=%s free=%s\n", \$2, \$3, \$4}'
-free -h | awk '/^Swap:/ {printf "Swap: total=%s used=%s\n", \$2, \$3}'
-
-echo -e "\n${GREEN}Disk${NC}"
-df -h / | awk 'NR==2 {printf "/: total=%s used=%s (%s) free=%s\n", \$2, \$3, \$5, \$4}'
-
-echo -e "\n${GREEN}Connections${NC}"
-echo "ESTABLISHED: \$(ss -t state established | wc -l)"
-echo "TIME-WAIT:   \$(ss -t state time-wait | wc -l)"
-if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
-  echo "Conntrack:   \$(cat /proc/sys/net/netfilter/nf_conntrack_count) / \$(cat /proc/sys/net/netfilter/nf_conntrack_max)"
-fi
-
-echo -e "\n${GREEN}Services${NC}"
-for svc in x-ui fail2ban ufw; do
-  if systemctl is-active --quiet "\$svc" 2>/dev/null; then
-    echo -e "\$svc: ${GREEN}active${NC}"
-  else
-    echo -e "\$svc: ${RED}inactive${NC}"
-  fi
-done
-
-echo -e "\n${GREEN}Xray${NC}"
-if pgrep -x xray >/dev/null; then
-  pid="\$(pgrep -x xray | head -1)"
-  mem="\$(ps -o rss= -p "\$pid" | awk '{printf "%.1f MB", \$1/1024}')"
-  echo "running: PID=\$pid RAM=\$mem FD=\$(ls /proc/\$pid/fd 2>/dev/null | wc -l)"
-else
-  echo "not running"
-fi
-EOF
-
-  chmod +x /usr/local/bin/vpn-status
-  log_success "Created: /usr/local/bin/vpn-status"
-}
-
-# ----------------------------
-# Auto security updates
-# ----------------------------
-setup_unattended_upgrades() {
-  section "Automatic security updates"
-
-  local distro_id
-  local distro_codename
-  distro_id="$(. /etc/os-release && echo "${ID}")"
-  distro_codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
-
-  cat > /etc/apt/apt.conf.d/50unattended-upgrades <<EOF
-Unattended-Upgrade::Allowed-Origins {
-    "${distro_id}:${distro_codename}";
-    "${distro_id}:${distro_codename}-security";
-};
-Unattended-Upgrade::AutoFixInterruptedDpkg "true";
-Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
-Unattended-Upgrade::Remove-Unused-Dependencies "true";
-Unattended-Upgrade::Automatic-Reboot "false";
-EOF
-
-  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
-APT::Periodic::AutocleanInterval "7";
-EOF
-
-  systemctl enable unattended-upgrades >/dev/null 2>&1 || true
-  systemctl restart unattended-upgrades
-  log_success "Automatic security updates configured"
-}
-
-# ----------------------------
-# Optional periodic DB backup
-# ----------------------------
-setup_periodic_db_backup_job() {
-  section "Periodic DB backup job"
-
-  cat > /usr/local/bin/backup-x-ui <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-BACKUP_DIR="${BACKUP_DIR}"
-DB="${XUI_DB}"
-SQLITE_BUSY_TIMEOUT_MS="${SQLITE_BUSY_TIMEOUT_MS}"
-SQLITE_RETRY_ATTEMPTS="${SQLITE_RETRY_ATTEMPTS}"
-mkdir -p "\$BACKUP_DIR"
-if [[ ! -f "\$DB" ]]; then
-  exit 0
-fi
-TS=\$(date +%Y%m%d_%H%M%S)
-OUT="\$BACKUP_DIR/x-ui-db-\$TS.db"
-if command -v sqlite3 >/dev/null 2>&1; then
-  attempt=1
-  while true; do
-    if sqlite3 "\$DB" <<SQLITE_EOF >/dev/null 2>&1
-.timeout \$SQLITE_BUSY_TIMEOUT_MS
-.backup '\$OUT'
-SQLITE_EOF
-    then
-      break
-    fi
-
-    if (( attempt >= SQLITE_RETRY_ATTEMPTS )); then
-      exit 1
-    fi
-
-    sleep 2
-    attempt=\$((attempt + 1))
-  done
-else
-  cp "\$DB" "\$OUT"
-fi
-chmod 600 "\$OUT"
-ls -1t "\$BACKUP_DIR"/x-ui-db-*.db 2>/dev/null | tail -n +31 | xargs -r rm -f
-EOF
-  chmod +x /usr/local/bin/backup-x-ui
-
-  local job='0 */6 * * * /usr/local/bin/backup-x-ui >> /var/log/x-ui-backup.log 2>&1'
-  local current
-  current="$(crontab -l 2>/dev/null || true)"
-  if ! grep -Fq "/usr/local/bin/backup-x-ui" <<< "$current"; then
-    (printf "%s\n%s\n" "$current" "$job" | sed '/^$/d') | crontab -
-    log_success "Cron backup job added: every 6 hours"
-  else
-    log_success "Cron backup job already exists"
-  fi
-}
-
 # ----------------------------
 # Summaries
 # ----------------------------
@@ -830,19 +506,17 @@ show_install_summary() {
   echo "Username:  ${username}"
   echo "Password:  ${password}"
   echo
-  echo "Backend IP for panel/subscription: ${BACKEND_IP}"
-  echo "Admin IP for panel:                ${ADMIN_IP:-not set}"
-  echo "Panel port hint:                   ${X3UI_PORT}/tcp (backend + admin IP)"
-  echo "Subscription port hint:            ${X3UI_SUB_PORT}/tcp (backend IP only)"
-  echo "Panel cert:                        ${XUI_PANEL_CERT_PATH}"
+  echo "Backend IP hint:                   ${BACKEND_IP:-not set}"
+  echo "Admin IP hint:                     ${ADMIN_IP:-not set}"
+  echo "Panel port hint:                   ${X3UI_PORT}/tcp (open to all)"
+  echo "Subscription port hint:            ${X3UI_SUB_PORT}/tcp (open manually if needed)"
+  echo "UFW public ports:                  80/tcp, 443/tcp, ${X3UI_PORT}/tcp"
   echo "VPN public ports:                  443/tcp"
   echo
   echo "Credentials file:   ${CREDS_FILE}"
   echo "3X-UI install log:  ${XUI_INSTALL_LOG}"
-  echo "Backup dir:         ${BACKUP_DIR}"
-  echo "Monitoring:         vpn-status"
   echo
-  echo "IMPORTANT: panel settings were not auto-customized. Configure panel/web path/subscription manually in 3X-UI."
+  echo "IMPORTANT: after install the script does not touch x-ui. Configure panel, TLS certificate and subscription settings manually in 3X-UI."
 }
 
 show_update_summary() {
@@ -855,15 +529,11 @@ show_update_summary() {
   echo "3X-UI panel settings preserved: yes"
   echo "3X-UI reinstall performed: no"
   echo "Panel URL: ${panel_url}"
-  echo "Panel port hint in firewall: ${X3UI_PORT}/tcp"
-  echo "Panel access allowed from backend IP: ${BACKEND_IP}"
-  echo "Panel access allowed from admin IP:   ${ADMIN_IP:-not set}"
-  echo
-  echo "Latest backups:"
-  ls -1t "${BACKUP_DIR}"/x-ui-db-*.db 2>/dev/null | head -3 || true
+  echo "Panel port hint in firewall: ${X3UI_PORT}/tcp (open to all)"
+  echo "UFW public ports:            80/tcp, 443/tcp, ${X3UI_PORT}/tcp"
   echo
   echo "Credentials file: ${CREDS_FILE}"
-  echo "Monitoring:       vpn-status"
+  echo "IMPORTANT: update intentionally does not touch x-ui settings or certificates."
 }
 
 # ----------------------------
@@ -878,16 +548,9 @@ cmd_install() {
   apply_sysctl_tuning
   enable_bbr_if_needed
   fresh_install_3xui
-  setup_xui_systemd
-  setup_self_signed_panel_certificate force
   write_credentials_file
   setup_firewall
   setup_fail2ban
-  setup_logrotate
-  create_monitoring_script
-  setup_unattended_upgrades
-  setup_periodic_db_backup_job
-  backup_xui_db
   show_install_summary
 }
 
@@ -896,7 +559,6 @@ cmd_update() {
   is_xui_installed || die "3X-UI installation not found. Use install mode on a fresh server."
   note_panel_bootstrap_mode
 
-  backup_xui_db
   install_base_packages
   apply_sysctl_tuning
   enable_bbr_if_needed
@@ -905,15 +567,9 @@ cmd_update() {
   # no reinstall of 3X-UI
   # no changing x-ui username/password/port/path
 
-  setup_xui_systemd
-  setup_self_signed_panel_certificate preserve
   write_credentials_file
   setup_firewall
   setup_fail2ban
-  setup_logrotate
-  create_monitoring_script
-  setup_unattended_upgrades
-  setup_periodic_db_backup_job
   show_update_summary
 }
 

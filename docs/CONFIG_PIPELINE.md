@@ -94,7 +94,6 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 - `X3UI_SUB_PORT`
 - `ENABLE_BBR`
 - `ENABLE_FIREWALL`
-- `PANEL_CERT_DAYS`
 
 Дополнительные переменные для firewall и сохранения credentials:
 
@@ -110,26 +109,24 @@ make vpn-install-direct BACKEND_IP=<PUBLIC_BACKEND_IP> ADMIN_IP=<YOUR_ADMIN_IP>
 
 - ставит 3X-UI
 - сохраняет install log в `/root/.vpn-server-3x-ui-install.log`
-- создает self-signed сертификат `/root/cert/x-ui.crt` и `/root/cert/x-ui.key`
-- привязывает этот сертификат к панели
-- настраивает firewall, `fail2ban`, backup `x-ui.db`
+- после завершения install flow больше не трогает `x-ui`
+- открывает `80/tcp`, `443/tcp` и `X3UI_PORT/tcp` для всех
+- настраивает `fail2ban`
 
 ### 3.3 Что проверить сразу после install
 
 ```bash
 cat /root/.vpn-server-credentials
-vpn-status
 systemctl status x-ui
 ufw status verbose
 ```
 
 Файл `/root/.vpn-server-credentials` содержит:
 
-- фактический panel URL
+- panel URL из install flow
 - текущий username
 - password, если его удалось вытащить из install log
 - subscription port hint
-- пути к сертификату
 
 ## 4. Ручная настройка панели 3X-UI
 
@@ -150,8 +147,17 @@ ufw status verbose
 - `webBasePath`
 - username/password
 - subscription port и subscription path
+- TLS certificate для панели и подписок
 
-### 4.3 Поднять WARP вручную на ОС
+### 4.3 Настроить TLS сертификат вручную
+
+Скрипт специально оставляет `80/tcp` открытым, чтобы вы могли потом получить сертификат через `Let's Encrypt` или другой ACME flow.
+
+После выпуска сертификата привяжите его к панели вручную в 3X-UI.
+
+Если вы используете отдельный public subscription port, его тоже нужно открыть в firewall вручную после финальной настройки панели.
+
+### 4.4 Поднять WARP вручную на ОС
 
 После bootstrap ноды выполните WARP pipeline вручную:
 
@@ -171,14 +177,14 @@ curl -x socks5h://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep "w
 
 Если клиент уже установлен, не нужно заново прогонять весь bootstrap ноды: достаточно вручную довести WARP и убедиться, что proxy реально отвечает на `127.0.0.1:40000`.
 
-### 4.4 Донастроить WARP в 3X-UI
+### 4.5 Донастроить WARP в 3X-UI
 
 После того как WARP proxy реально поднялся на уровне ОС, в самой панели нужно вручную:
 
 - создать outbound, который использует локальный WARP proxy
 - создать routing rules для нужных inbound-ов и доменов
 
-### 4.5 Создать inbound вручную
+### 4.6 Создать inbound вручную
 
 Нужно вручную создать production inbound в 3X-UI.
 
@@ -289,12 +295,12 @@ curl -H "Authorization: Bearer ${API_TOKEN}" \
 - Inbound создан, но не включен
 - После ручного создания inbound забыли выполнить `sync`
 - Вручную поменяли panel port, но не обновили firewall
+- Настроили отдельный subscription port в панели, но забыли открыть его в firewall
 - Ожидается, что WARP routing заработает сам по себе, хотя WARP proxy не поднялся на `127.0.0.1:40000` или в 3X-UI не был создан outbound/rule
 
 ## 9. Что не требуется
 
 Сейчас не требуется:
 
-- вручную выпускать self-signed сертификат для 3X-UI
 - вручную открывать отдельный внешний порт для WARP proxy
 - менять firewall backend-хоста для исходящего доступа к VPN-ноде

@@ -75,7 +75,7 @@ Current rules:
 - server record must use `use_https=true`
 - backend intentionally rejects plain HTTP
 - TLS certificate verification is disabled with `verify=False`
-- this is intentional for self-signed panel certificates
+- this is intentional to support self-signed and other manually managed panel certificates
 
 3X-UI client file:
 
