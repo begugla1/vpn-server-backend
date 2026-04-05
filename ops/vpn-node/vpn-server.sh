@@ -464,6 +464,8 @@ setup_firewall() {
   ufw allow "${X3UI_PORT}/tcp" comment '3X-UI Panel'
 
   ufw --force enable >/dev/null 2>&1
+  ufw logging off
+  ufw reload
   log_success "Firewall applied"
 }
 
