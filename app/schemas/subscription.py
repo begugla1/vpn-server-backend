@@ -11,7 +11,7 @@ class SubscriptionCreateBase(BaseModel):
     limit_ip: int = 0
     enable: bool = True
     tg_id: Optional[str] = ""
-    flow: str = ""  # для VLESS: xtls-rprx-vision
+    flow: str = "xtls-rprx-vision"  # для VLESS: xtls-rprx-vision
 
 
 class SubscriptionCreate(SubscriptionCreateBase):
