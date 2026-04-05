@@ -355,52 +355,52 @@ EOF
     systemctl restart cron >/dev/null 2>&1 || true
 }
 
-# install_docker_user_firewall() {
-#     local external_iface
+install_docker_user_firewall() {
+    local external_iface
 
-#     external_iface="$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')"
-#     [[ -n "${external_iface}" ]] || die "Could not detect the external network interface."
+    external_iface="$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')"
+    [[ -n "${external_iface}" ]] || die "Could not detect the external network interface."
 
-#     log "Installing DOCKER-USER firewall guard for published ports"
-#     cat > "${DOCKER_FIREWALL_SCRIPT}" <<EOF
-# #!/usr/bin/env bash
-# set -Eeuo pipefail
+    log "Installing DOCKER-USER firewall guard for published ports"
+    cat > "${DOCKER_FIREWALL_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# EXT_IFACE="${external_iface}"
-# APP_PORT="${APP_PORT}"
+EXT_IFACE="${external_iface}"
+APP_PORT="${APP_PORT}"
 
-# iptables -N DOCKER-USER 2>/dev/null || true
+iptables -N DOCKER-USER 2>/dev/null || true
 
-# iptables -C DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-#     iptables -I DOCKER-USER 1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -C DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    iptables -I DOCKER-USER 1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# iptables -C DOCKER-USER -i "\${EXT_IFACE}" -p tcp --dport "\${APP_PORT}" -j ACCEPT 2>/dev/null || \
-#     iptables -I DOCKER-USER 2 -i "\${EXT_IFACE}" -p tcp --dport "\${APP_PORT}" -j ACCEPT
+iptables -C DOCKER-USER -i "\${EXT_IFACE}" -p tcp --dport "\${APP_PORT}" -j ACCEPT 2>/dev/null || \
+    iptables -I DOCKER-USER 2 -i "\${EXT_IFACE}" -p tcp --dport "\${APP_PORT}" -j ACCEPT
 
-# iptables -C DOCKER-USER -i "\${EXT_IFACE}" -j DROP 2>/dev/null || \
-#     iptables -A DOCKER-USER -i "\${EXT_IFACE}" -j DROP
-# EOF
-#     chmod 0755 "${DOCKER_FIREWALL_SCRIPT}"
+iptables -C DOCKER-USER -i "\${EXT_IFACE}" -j DROP 2>/dev/null || \
+    iptables -A DOCKER-USER -i "\${EXT_IFACE}" -j DROP
+EOF
+    chmod 0755 "${DOCKER_FIREWALL_SCRIPT}"
 
-#     cat > "${DOCKER_FIREWALL_SERVICE}" <<EOF
-# [Unit]
-# Description=Restrict Docker published ports for VPN backend
-# After=docker.service network-online.target
-# Wants=network-online.target
-# Requires=docker.service
+    cat > "${DOCKER_FIREWALL_SERVICE}" <<EOF
+[Unit]
+Description=Restrict Docker published ports for VPN backend
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
 
-# [Service]
-# Type=oneshot
-# ExecStart=${DOCKER_FIREWALL_SCRIPT}
-# RemainAfterExit=yes
+[Service]
+Type=oneshot
+ExecStart=${DOCKER_FIREWALL_SCRIPT}
+RemainAfterExit=yes
 
-# [Install]
-# WantedBy=multi-user.target
-# EOF
+[Install]
+WantedBy=multi-user.target
+EOF
 
-#     systemctl daemon-reload
-#     systemctl enable --now "$(basename "${DOCKER_FIREWALL_SERVICE}")"
-# }
+    systemctl daemon-reload
+    systemctl enable --now "$(basename "${DOCKER_FIREWALL_SERVICE}")"
+}
 
 deploy_stack() {
     log "Deploying Docker Compose stack"
